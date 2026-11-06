@@ -1,0 +1,30 @@
+{
+  "name": "ym-overlay",
+  "productName": "YM Overlay",
+  "version": "0.1.0",
+  "description": "Оверлей для Яндекс Музыки: мини-плеер поверх окон и панель управления по горячей клавише",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win nsis"
+  },
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "local.ym.overlay",
+    "productName": "YM Overlay",
+    "files": [
+      "main.js",
+      "preload.js",
+      "overlay.html",
+      "icon.png",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "icon.png"
+    }
+  }
+}

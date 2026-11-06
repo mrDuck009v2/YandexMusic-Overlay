@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' https://*.yandex.net https://*.yandex.ru data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'">
+<title>YM Overlay</title>
+<style>
+  :root { --op: 0.7; --accent: #ffcc00; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: transparent;
+    font-family: "Segoe UI", system-ui, sans-serif; color: #fff; user-select: none; }
+
+  /* ───────── Мини-плеер (HUD) ───────── */
+  #hud { position: fixed; width: 330px; padding: 10px; display: flex; gap: 12px; align-items: center;
+    background: rgba(18, 18, 22, var(--op)); border-radius: 14px; backdrop-filter: blur(14px);
+    transition: opacity .25s, transform .25s; overflow: hidden; z-index: 10; touch-action: none; }
+  #hud.free { right: auto; bottom: auto; }
+  #hud.dragging { transition: none; }
+  #hud.hidden { opacity: 0; transform: translateY(-6px); }
+  #hud.top-left { top: 20px; left: 20px; }
+  #hud.top-right { top: 20px; right: 20px; }
+  #hud.bottom-left { bottom: 20px; left: 20px; }
+  #hud.bottom-right { bottom: 20px; right: 20px; }
+  #hud .cover { width: 52px; height: 52px; border-radius: 8px; background: #333 center/cover; flex: none; }
+  #hud .txt { min-width: 0; flex: 1; }
+  #hud .t { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #hud .a { font-size: 12px; color: rgba(255,255,255,.7); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #hud .bar { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--accent); width: 0; transition: width .5s linear; }
+  #hud .state { font-size: 14px; flex: none; opacity: .8; display: flex; align-items: center; }
+  #hud .state svg { width: 20px; height: 20px; }
+
+  /* ───────── Панель (по хоткею) ───────── */
+  #backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: flex; align-items: center;
+    justify-content: center; opacity: 0; pointer-events: none; transition: opacity .18s; }
+  body.open #backdrop { opacity: 1; pointer-events: auto; }
+  body.open #hud, body.open #hud.hidden { opacity: 1; transform: none; cursor: grab;
+    outline: 2px dashed rgba(255,204,0,.7); outline-offset: -2px; }
+  body.open #hud.dragging { cursor: grabbing; }
+  #panel { width: 600px; max-width: 92vw; background: rgba(24,24,29,.96); border-radius: 18px; padding: 22px;
+    box-shadow: 0 20px 60px rgba(0,0,0,.6); transform: scale(.97); transition: transform .18s; }
+  body.open #panel { transform: scale(1); }
+  .top { display: flex; gap: 18px; }
+  .top .cover { width: 150px; height: 150px; border-radius: 12px; background: #333 center/cover; flex: none; }
+  .info { min-width: 0; flex: 1; display: flex; flex-direction: column; justify-content: center; }
+  .info .t { font-size: 20px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .info .a { font-size: 14px; color: rgba(255,255,255,.7); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .info .al { font-size: 12px; color: rgba(255,255,255,.45); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .seek { display: flex; align-items: center; gap: 10px; margin: 18px 0 8px; font-size: 12px; color: rgba(255,255,255,.6); }
+  input[type=range] { -webkit-appearance: none; appearance: none; height: 5px; border-radius: 3px;
+    background: rgba(255,255,255,.2); outline: none; flex: 1; cursor: pointer; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 13px; height: 13px; border-radius: 50%; background: var(--accent); }
+
+  .controls { display: flex; align-items: center; justify-content: center; gap: 10px; }
+  button { font: inherit; color: #fff; background: rgba(255,255,255,.08); border: none; cursor: pointer;
+    border-radius: 10px; padding: 8px 14px; font-size: 16px; transition: background .12s; }
+  button:hover { background: rgba(255,255,255,.18); }
+  button.active { color: var(--accent); background: rgba(255,204,0,.22); box-shadow: inset 0 0 0 1.5px var(--accent); }
+  button { display: inline-flex; align-items: center; justify-content: center; }
+  svg { fill: currentColor; flex: none; }
+  .controls button svg { width: 22px; height: 22px; }
+  button.big svg { width: 28px; height: 28px; }
+  #vIcon { display: inline-flex; width: 22px; height: 22px; align-items: center; justify-content: center; }
+  #vIcon svg { width: 22px; height: 22px; }
+  button.big { width: 56px; height: 56px; border-radius: 50%; background: var(--accent); color: #111; font-size: 22px; }
+  button.big:hover { background: #ffd83a; }
+  .vol { display: flex; align-items: center; gap: 8px; margin-left: 14px; width: 140px; }
+
+  #queueWrap { margin-top: 18px; }
+  #queueWrap h4 { margin: 0 0 6px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: rgba(255,255,255,.45); }
+  #queue { max-height: 200px; overflow-y: auto; border-radius: 10px; background: rgba(255,255,255,.04); }
+  #queue::-webkit-scrollbar { width: 8px; }
+  #queue::-webkit-scrollbar-thumb { background: rgba(255,255,255,.2); border-radius: 4px; }
+  .q { display: flex; gap: 10px; padding: 7px 12px; font-size: 13px; cursor: pointer; align-items: baseline; }
+  .q:hover { background: rgba(255,255,255,.08); }
+  .q.cur { color: var(--accent); }
+  .q .n { width: 26px; text-align: right; color: rgba(255,255,255,.4); flex: none; }
+  .q .tt { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .q .aa { color: rgba(255,255,255,.5); max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .foot { display: flex; justify-content: space-between; align-items: center; margin-top: 16px; font-size: 12px; color: rgba(255,255,255,.4); }
+  .foot button { font-size: 12px; padding: 6px 12px; }
+  #notReady { display: none; margin: 14px 0 0; padding: 10px 12px; border-radius: 10px; background: rgba(255,204,0,.12); color: #ffe07a; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<div id="hud" class="top-right">
+  <div class="cover" id="hCover"></div>
+  <div class="txt">
+    <div class="t" id="hTitle">Яндекс Музыка</div>
+    <div class="a" id="hArtist">загрузка…</div>
+  </div>
+  <div class="state" id="hState">▶</div>
+  <div class="bar" id="hBar"></div>
+</div>
+
+<div id="backdrop">
+  <div id="panel">
+    <div class="top">
+      <div class="cover" id="pCover"></div>
+      <div class="info">
+        <div class="t" id="pTitle">—</div>
+        <div class="a" id="pArtist"></div>
+        <div class="al" id="pAlbum"></div>
+      </div>
+    </div>
+
+    <div class="seek">
+      <span id="tCur">0:00</span>
+      <input type="range" id="seek" min="0" max="1" step="1" value="0">
+      <span id="tDur">0:00</span>
+    </div>
+
+    <div class="controls">
+      <button id="bShuffle" title="Перемешать">🔀</button>
+      <button id="bPrev" title="Назад">⏮</button>
+      <button id="bPlay" class="big" title="Пауза / играть">▶</button>
+      <button id="bNext" title="Дальше">⏭</button>
+      <button id="bRepeat" title="Повтор">🔁</button>
+      <button id="bLike" title="Нравится">♥</button>
+      <div class="vol"><span id="vIcon">🔊</span> <input type="range" id="vol" min="0" max="1" step="0.01" value="1"></div>
+    </div>
+
+    <div id="notReady">Плеер Яндекс Музыки ещё не готов. Нажми «Открыть Яндекс Музыку», войди в аккаунт и запусти любой трек.</div>
+
+    <div id="queueWrap">
+      <h4>Очередь</h4>
+      <div id="queue"></div>
+    </div>
+
+    <div class="foot">
+      <span id="hint">Esc — закрыть</span>
+      <button id="bOpen">Открыть Яндекс Музыку (поиск, плейлисты)</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const fmt = (s) => { s = Math.max(0, Math.floor(s || 0)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+
+  let state = { ready: false };
+  const icons = {}; // href -> { vb, html } — иконки из спрайта самого сайта
+  let cfg = { hudCorner: 'top-right', hudOpacity: 0.7, hudVisible: true, hudFlash: true, hotkeyPanel: '', hudPos: null };
+  let panelOpen = false, seeking = false, volDragging = false;
+  let flashTimer = null, flashing = false, lastTrackKey = '';
+
+  // ───────── иконки сайта ─────────
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const SVG_OK = new Set(['g', 'path', 'circle', 'rect', 'ellipse', 'line', 'polyline', 'polygon', 'defs', 'clippath', 'mask', 'lineargradient', 'radialgradient', 'stop']);
+  function buildSvg(def) {
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('viewBox', def.vb);
+    svg.setAttribute('aria-hidden', 'true');
+    const doc = new DOMParser().parseFromString('<svg xmlns="' + SVG_NS + '">' + def.html + '</svg>', 'image/svg+xml');
+    const copy = (src, dst) => {
+      for (const n of src.children) {
+        if (!SVG_OK.has(n.localName.toLowerCase())) continue;
+        const el = document.createElementNS(SVG_NS, n.localName);
+        for (const a of n.attributes) {
+          if (/^on/i.test(a.name) || /href/i.test(a.name) || /^xmlns/i.test(a.name)) continue;
+          try { el.setAttribute(a.name, a.value); } catch { /* пропускаем */ }
+        }
+        copy(n, el);
+        dst.appendChild(el);
+      }
+    };
+    copy(doc.documentElement, svg);
+    return svg;
+  }
+  function setIcon(el, role, fallback) {
+    const href = state.icons && state.icons[role];
+    const def = href ? icons[href] : null;
+    const key = def ? href : 'fb:' + fallback;
+    if (el.dataset.ic === key) return;
+    el.dataset.ic = key;
+    el.textContent = '';
+    if (def) el.appendChild(buildSvg(def)); else el.textContent = fallback;
+  }
+
+  // ───────── положение мини-плеера (можно перетащить, пока открыта панель) ─────────
+  function applyHudPos() {
+    const hud = $('hud');
+    hud.classList.remove('top-left', 'top-right', 'bottom-left', 'bottom-right', 'free');
+    if (cfg.hudPos) {
+      hud.classList.add('free');
+      hud.style.left = Math.round(cfg.hudPos.x * Math.max(0, window.innerWidth - hud.offsetWidth)) + 'px';
+      hud.style.top = Math.round(cfg.hudPos.y * Math.max(0, window.innerHeight - hud.offsetHeight)) + 'px';
+    } else {
+      hud.classList.add(cfg.hudCorner);
+      hud.style.left = '';
+      hud.style.top = '';
+    }
+  }
+  let drag = null;
+  $('hud').addEventListener('pointerdown', (e) => {
+    if (!panelOpen || e.button !== 0) return;
+    const r = $('hud').getBoundingClientRect();
+    drag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+    $('hud').setPointerCapture(e.pointerId);
+    $('hud').classList.add('dragging');
+    e.preventDefault();
+  });
+  $('hud').addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const hud = $('hud');
+    const maxX = Math.max(1, window.innerWidth - hud.offsetWidth);
+    const maxY = Math.max(1, window.innerHeight - hud.offsetHeight);
+    const x = Math.min(maxX, Math.max(0, e.clientX - drag.dx));
+    const y = Math.min(maxY, Math.max(0, e.clientY - drag.dy));
+    cfg.hudPos = { x: x / maxX, y: y / maxY };
+    applyHudPos();
+  });
+  const endDrag = () => {
+    if (!drag) return;
+    drag = null;
+    $('hud').classList.remove('dragging');
+    if (cfg.hudPos) window.ym.setHudPos(cfg.hudPos);
+  };
+  $('hud').addEventListener('pointerup', endDrag);
+  $('hud').addEventListener('pointercancel', endDrag);
+  window.addEventListener('resize', applyHudPos);
+
+  function setCover(el, url) {
+    if (el.dataset.src === (url || '')) return;
+    el.dataset.src = url || '';
+    el.style.backgroundImage = url ? `url("${url}")` : 'none';
+  }
+
+  function updateHudVisibility() {
+    $('hud').classList.toggle('hidden', !(cfg.hudVisible || flashing));
+  }
+
+  function render() {
+    const ok = state.ready && !state.empty;
+    const title = ok ? state.title + (state.version ? ` (${state.version})` : '') : (state.ready ? 'Ничего не играет' : 'Яндекс Музыка');
+    const artist = ok ? state.artist : (state.ready ? 'Запусти любой трек' : 'ждём плеер…');
+
+    $('hTitle').textContent = title;
+    $('hArtist').textContent = artist;
+    if (ok) setIcon($('hState'), 'play', state.playing ? '⏸' : '▶'); else { $('hState').dataset.ic = ''; $('hState').textContent = ''; }
+    $('pTitle').textContent = title;
+    $('pArtist').textContent = artist;
+    $('pAlbum').textContent = ok ? state.album : '';
+    setCover($('hCover'), ok ? state.cover : '');
+    setCover($('pCover'), ok ? state.cover : '');
+    setIcon($('bPlay'), 'play', ok && state.playing ? '⏸' : '▶');
+    setIcon($('bPrev'), 'prev', '⏮');
+    setIcon($('bNext'), 'next', '⏭');
+    setIcon($('bShuffle'), 'shuffle', '🔀');
+    setIcon($('bRepeat'), 'repeat', '🔁');
+    setIcon($('bLike'), 'like', '♥');
+    setIcon($('vIcon'), 'volume', '🔊');
+    $('bLike').classList.toggle('active', !!state.liked);
+    $('bShuffle').classList.toggle('active', !!state.shuffle);
+    $('bRepeat').classList.toggle('active', !!state.repeat);
+    $('notReady').style.display = state.ready ? 'none' : 'block';
+
+    const dur = ok ? state.duration : 0, pos = ok ? state.position : 0;
+    $('hBar').style.width = dur ? (pos / dur * 100) + '%' : '0';
+    if (!seeking) {
+      $('seek').max = dur || 1;
+      $('seek').value = pos;
+      $('tCur').textContent = fmt(pos);
+    }
+    $('tDur').textContent = fmt(dur);
+    if (!volDragging && typeof state.volume === 'number') $('vol').value = state.volume;
+
+    // смена трека: мигаем мини-плеером, если он скрыт; обновляем очередь, если панель открыта
+    const key = ok ? state.title + '|' + state.artist : '';
+    if (key && key !== lastTrackKey) {
+      if (lastTrackKey && cfg.hudFlash && !cfg.hudVisible && !panelOpen) {
+        flashing = true;
+        updateHudVisibility();
+        clearTimeout(flashTimer);
+        flashTimer = setTimeout(() => { flashing = false; updateHudVisibility(); }, 4000);
+      }
+      if (panelOpen) loadQueue();
+    }
+    if (key) lastTrackKey = key;
+    markCurrentInQueue();
+  }
+
+  // ───────── очередь ─────────
+  let queueItems = [], queueCur = -1;
+  async function loadQueue() {
+    const q = await window.ym.queue();
+    if (q === null) return; // чтение уже идёт, оставляем как есть
+    queueItems = q;
+    const curItem = queueItems.find((x) => x.cur);
+    queueCur = curItem ? curItem.i : -1;
+    const box = $('queue');
+    box.textContent = '';
+    if (!queueItems.length) {
+      const d = document.createElement('div');
+      d.className = 'q';
+      d.textContent = 'Очередь недоступна или пуста';
+      box.appendChild(d);
+      return;
+    }
+    for (const it of queueItems) {
+      const row = document.createElement('div');
+      row.className = 'q';
+      row.dataset.i = it.i;
+      const n = document.createElement('span'); n.className = 'n'; n.textContent = it.i + 1;
+      const t = document.createElement('span'); t.className = 'tt'; t.textContent = it.title;
+      const a = document.createElement('span'); a.className = 'aa'; a.textContent = it.artist;
+      row.append(n, t, a);
+      row.addEventListener('click', async () => { await window.ym.cmd('play', it.i); loadQueue(); });
+      box.appendChild(row);
+    }
+    markCurrentInQueue(true);
+  }
+  function markCurrentInQueue(scroll) {
+    const rows = $('queue').querySelectorAll('.q[data-i]');
+    rows.forEach((r) => {
+      const cur = Number(r.dataset.i) === (state.index >= 0 ? state.index : queueCur);
+      r.classList.toggle('cur', cur);
+      if (cur && scroll) r.scrollIntoView({ block: 'center' });
+    });
+  }
+
+  // ───────── панель ─────────
+  function setPanel(open) {
+    panelOpen = open;
+    document.body.classList.toggle('open', open);
+    if (open) loadQueue();
+  }
+
+  // ───────── события от main ─────────
+  window.ym.onState((s) => { state = s; render(); });
+  window.ym.onPanel(setPanel);
+  window.ym.onIcons((m) => { Object.assign(icons, m); render(); });
+  window.ym.onHud((v) => { cfg.hudVisible = v; updateHudVisibility(); });
+  window.ym.onConfig((c) => {
+    cfg = { ...cfg, ...c };
+    applyHudPos();
+    document.documentElement.style.setProperty('--op', Math.min(1, Math.max(0.2, cfg.hudOpacity)));
+    $('hint').textContent = `Esc или ${cfg.hotkeyPanel} — закрыть · мини-плеер можно перетащить`;
+    updateHudVisibility();
+  });
+
+  // ───────── кнопки ─────────
+  $('bPlay').onclick = () => window.ym.cmd('toggle');
+  $('bPrev').onclick = () => window.ym.cmd('prev');
+  $('bNext').onclick = () => window.ym.cmd('next');
+  $('bLike').onclick = () => window.ym.cmd('like');
+  $('bShuffle').onclick = () => window.ym.cmd('shuffle');
+  $('bRepeat').onclick = () => window.ym.cmd('repeat');
+  $('bOpen').onclick = () => window.ym.openYandex();
+
+  const seekEl = $('seek');
+  seekEl.addEventListener('pointerdown', () => { seeking = true; });
+  seekEl.addEventListener('input', () => { $('tCur').textContent = fmt(seekEl.value); });
+  seekEl.addEventListener('change', () => { window.ym.cmd('seek', seekEl.value); setTimeout(() => { seeking = false; }, 400); });
+  seekEl.addEventListener('pointerup', () => setTimeout(() => { seeking = false; }, 400));
+
+  const volEl = $('vol');
+  volEl.addEventListener('pointerdown', () => { volDragging = true; });
+  volEl.addEventListener('input', () => window.ym.cmd('volume', volEl.value));
+  volEl.addEventListener('pointerup', () => setTimeout(() => { volDragging = false; }, 300));
+
+  // клик по затемнению и Esc закрывают панель
+  $('backdrop').addEventListener('mousedown', (e) => { if (e.target === $('backdrop')) window.ym.closePanel(); });
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') window.ym.closePanel();
+  });
+
+  render();
+</script>
+</body>
+</html>
