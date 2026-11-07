@@ -1,5 +1,5 @@
 const {
-  app, BrowserWindow, globalShortcut, ipcMain, screen, Tray, Menu, nativeImage, shell,
+  app, BrowserWindow, globalShortcut, ipcMain, screen, Tray, Menu, nativeImage, shell, net,
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -16,6 +16,22 @@ const DEFAULTS = {
   hudVisible: true,                        // показывать мини-плеер постоянно
   hudFlashOnTrackChange: true,             // если скрыт — мигнуть на 4 сек при смене трека
   hudPos: null,                            // {x, y} 0…1 — положение, если мини-плеер перетащили мышкой
+  hotkeyLyrics: 'CommandOrControl+Shift+L', // закрепить/открепить окно с текстом песни
+  hudLyrics: true,                         // показывать текущую строку песни в мини-плеере
+  lyricsVisible: true,                     // окно с текстом включено (видно при открытой панели)
+  lyricsPinned: false,                     // закреплено: окно текста остаётся поверх окон и без панели
+  lyricsPos: null,                         // {x, y, w, h} — положение (0…1) и размер окна текста
+  theme: {                                 // внешний вид (всё это меняется во вкладке «Вид» панели)
+    accent: '#ffcc00',                     // акцентный цвет
+    bg: '#121216',                         // цвет фона плашек и панели
+    fg: '#ffffff',                         // цвет текста
+    lyricsOpacity: 0.7,                    // прозрачность окна текста, 0.1…1
+    panelOpacity: 0.96,                    // прозрачность панели, 0.5…1
+    lyricsFontSize: 16,                    // размер текста песни, px
+    radius: 14,                            // скругление углов, px
+    blur: true,                            // размытие фона за плашками
+  },
+  lyricsOffset: 0,                         // сдвиг текста в секундах (+ — строки раньше, − — позже)
 };
 
 const ICON = path.join(__dirname, 'icon.png');
@@ -39,6 +55,24 @@ function log(...args) {
   try { if (logFile) fs.appendFileSync(logFile, line); } catch { /* не критично */ }
 }
 
+// приводим настройки вида к допустимым значениям (в конфиге их могли поправить руками)
+function sanitizeTheme(t) {
+  const D = DEFAULTS.theme;
+  const hex = (v, d) => (typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v.trim()) ? v.trim().toLowerCase() : d);
+  const num = (v, a, b, d) => (Number.isFinite(Number(v)) && v !== null && v !== '' ? Math.min(b, Math.max(a, Number(v))) : d);
+  t = t && typeof t === 'object' ? t : {};
+  return {
+    accent: hex(t.accent, D.accent),
+    bg: hex(t.bg, D.bg),
+    fg: hex(t.fg, D.fg),
+    lyricsOpacity: num(t.lyricsOpacity, 0.1, 1, D.lyricsOpacity),
+    panelOpacity: num(t.panelOpacity, 0.5, 1, D.panelOpacity),
+    lyricsFontSize: Math.round(num(t.lyricsFontSize, 12, 32, D.lyricsFontSize)),
+    radius: Math.round(num(t.radius, 0, 28, D.radius)),
+    blur: t.blur !== false,
+  };
+}
+
 function saveConfig() {
   try { fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2)); } catch { /* не критично */ }
 }
@@ -51,6 +85,12 @@ function configForOverlay() {
     hudFlash: cfg.hudFlashOnTrackChange,
     hotkeyPanel: cfg.hotkeyPanel,
     hudPos: cfg.hudPos,
+    hudLyrics: cfg.hudLyrics,
+    lyricsOffset: cfg.lyricsOffset,
+    lyricsVisible: cfg.lyricsVisible,
+    lyricsPinned: cfg.lyricsPinned,
+    lyricsPos: cfg.lyricsPos,
+    theme: cfg.theme,
   };
 }
 
@@ -62,6 +102,8 @@ function loadConfig() {
   let user = {};
   try { user = JSON.parse(fs.readFileSync(cfgFile, 'utf8')); } catch { /* нет файла — ок */ }
   cfg = { ...DEFAULTS, ...user };
+  cfg.theme = sanitizeTheme({ ...DEFAULTS.theme, ...(user.theme || {}) });
+  cfg.hudOpacity = Math.min(1, Math.max(0.2, Number(cfg.hudOpacity) || DEFAULTS.hudOpacity));
   try { fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2)); } catch { /* не критично */ }
 }
 
@@ -148,6 +190,9 @@ const STATE_JS = `(() => {
     const pressed = (b) => !!b && b.getAttribute('aria-pressed') === 'true';
     let pos = 0, dur = 0;
     if (seekEl) { pos = Number(seekEl.value) || 0; dur = Number(seekEl.max) || 0; }
+    // точная позиция (с долями секунды) из аудио-элемента — нужна для синхронного текста
+    const au = Array.from(document.querySelectorAll('audio,video')).find((m) => !m.paused && isFinite(m.currentTime) && isFinite(m.duration) && (!dur || Math.abs(m.duration - dur) < 3));
+    if (au) { pos = au.currentTime; if (!dur) dur = au.duration; }
     const lk = barBtns.find((b) => { const l = lbl(b); return l === 'Нравится' || /из любимых|убрать|удалить/i.test(l); });
     const sh = barBtns.find((b) => /перемеш|shuffle|случайн/i.test(lbl(b)));
     const rp = barBtns.find((b) => /повтор|repeat/i.test(lbl(b)));
@@ -255,6 +300,7 @@ async function ensureIcons(map) {
         iconCache[href] = null;
       } else {
         iconCache[href] = res;
+        log('Иконка загружена:', href, String(res.html).slice(0, 400));
         if (overlay && !overlay.isDestroyed()) overlay.webContents.send('icons', { [href]: res });
       }
     } catch (err) {
@@ -299,6 +345,8 @@ async function poll() {
       delete st.dbg;
     }
     ensureIcons(st.icons);
+    playerPlaying = !!st.playing;
+    trackLyrics(st);
     const out = JSON.stringify(st);
     if (out !== lastJson) {
       lastJson = out;
@@ -448,13 +496,22 @@ const QUEUE_JS = (playIdx) => `(async () => {
   } catch (e) { return JSON.stringify({ error: String(e) }); }
 })()`;
 
+// Скрытое окно сайта одно, а кликаем мы в нём из разных мест (очередь, поиск, команды) —
+// поэтому долгие операции выстраиваем в цепочку, чтобы они не мешали друг другу.
+let siteChain = Promise.resolve();
+function withSite(fn) {
+  const p = siteChain.then(fn, fn);
+  siteChain = p.catch(() => {});
+  return p;
+}
+
 let queueBusy = false;
 async function runQueue(playIdx) {
   if (!ymWin || ymWin.isDestroyed()) return [];
   if (queueBusy) return null; // уже читаем — оверлей повторит позже
   queueBusy = true;
   try {
-    const json = await ymWin.webContents.executeJavaScript(QUEUE_JS(playIdx), true);
+    const json = await withSite(() => ymWin.webContents.executeJavaScript(QUEUE_JS(playIdx), true));
     const res = JSON.parse(json);
     if (res.error) { log('Очередь:', res.error); return []; }
     return res.items;
@@ -464,6 +521,361 @@ async function runQueue(playIdx) {
   } finally {
     queueBusy = false;
   }
+}
+
+// ───────────────────── Текст песни ─────────────────────
+// Тексты берём из открытой базы LRCLIB (lrclib.net): там есть строки с таймкодами (как на сайте),
+// а где их нет — обычный текст без подсветки. Запросы идут из этого процесса, не из сайта Яндекса.
+const LRCLIB = 'https://lrclib.net/api';
+const lyricsCache = new Map(); // key -> payload
+let lyricsKey = '';
+let lyricsWaitTicks = 0;
+let lyricsSeq = 0;
+let lyricsPayload = { key: '', status: 'idle' };
+let playerPlaying = false;
+
+function sendLyrics(p) {
+  lyricsPayload = p;
+  if (overlay && !overlay.isDestroyed()) overlay.webContents.send('lyrics', p);
+}
+
+// "[01:23.45] строка" → [{ t: 83.45, text }]
+function parseLrc(text) {
+  const out = [];
+  let offset = 0;
+  const re = /^\s*\[(\d+):(\d+(?:[.:]\d+)?)\]/;
+  for (const raw of String(text || '').split(/\r?\n/)) {
+    const stamps = [];
+    let rest = raw;
+    let m;
+    while ((m = re.exec(rest))) {
+      stamps.push(Number(m[1]) * 60 + Number(m[2].replace(':', '.')));
+      rest = rest.slice(m[0].length);
+    }
+    if (!stamps.length) {
+      const o = /^\s*\[offset:\s*([+-]?\d+)\s*\]/i.exec(raw);
+      if (o) offset = Number(o[1]) / 1000;
+      continue;
+    }
+    const txt = rest.replace(/<\d+:\d+(?:[.:]\d+)?>/g, '').trim(); // пословные метки <00:01.20>
+    for (const t of stamps) out.push({ t, text: txt });
+  }
+  out.sort((a, b) => a.t - b.t);
+  while (out.length && !out[out.length - 1].text) out.pop();
+  return out.map((l) => ({ t: Math.max(0, Math.round((l.t - offset) * 100) / 100), text: l.text }));
+}
+
+async function lrclibGet(pathAndQuery) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 8000);
+  try {
+    const res = await net.fetch(LRCLIB + pathAndQuery, {
+      headers: { 'User-Agent': 'YM-Overlay/0.1.0 (local app)' },
+      signal: ctl.signal,
+    });
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const normName = (s) => String(s || '').toLowerCase()
+  .replace(/\(.*?\)|\[.*?\]/g, ' ')
+  .replace(/[^\p{L}\p{N}]+/gu, ' ')
+  .trim();
+
+async function fetchLyrics(t) {
+  const title = String(t.title || '').trim();
+  const artists = String(t.artist || '').split(/,|&|\bfeat\.?\b/i).map((x) => x.trim()).filter(Boolean);
+  const first = artists[0] || '';
+  const dur = Math.round(t.duration) || 0;
+  const qs = (o) => '?' + new URLSearchParams(o).toString();
+  const nt = normName(title);
+
+  const toPayload = (x) => {
+    if (!x) return null;
+    if (x.instrumental) return { status: 'instrumental' };
+    const durOk = !dur || !x.duration || Math.abs(x.duration - dur) <= 6;
+    const synced = x.syncedLyrics && durOk ? parseLrc(x.syncedLyrics) : [];
+    if (synced.length > 1) return { status: 'ok', synced, plain: null, source: 'LRCLIB' };
+    let plain = x.plainLyrics || '';
+    if (!plain && x.syncedLyrics) plain = parseLrc(x.syncedLyrics).map((l) => l.text).join('\n');
+    if (plain.trim()) return { status: 'ok', synced: null, plain: plain.trim(), source: 'LRCLIB' };
+    return null;
+  };
+
+  const pick = (list) => {
+    if (!Array.isArray(list)) return null;
+    let best = null, bestScore = -1;
+    for (const x of list) {
+      if (!x || (!x.instrumental && !x.syncedLyrics && !x.plainLyrics)) continue;
+      const xt = normName(x.trackName);
+      if (nt && xt && !(xt === nt || xt.includes(nt) || nt.includes(xt))) continue;
+      let sc = 0;
+      if (x.syncedLyrics) sc += 4;
+      if (xt === nt) sc += 3;
+      if (first && normName(x.artistName).includes(normName(first))) sc += 3;
+      if (dur && x.duration) {
+        const d = Math.abs(x.duration - dur);
+        sc += d <= 2 ? 4 : d <= 6 ? 2 : -2;
+      }
+      if (sc > bestScore) { best = x; bestScore = sc; }
+    }
+    return best;
+  };
+
+  // 1) точное совпадение по названию, исполнителю и длительности
+  if (first && dur) {
+    const exact = await lrclibGet('/get' + qs({ track_name: title, artist_name: first, duration: dur }));
+    const p = toPayload(exact);
+    if (p) return p;
+  }
+  // 2) поиск по названию и исполнителю, 3) общий поиск
+  const tries = [];
+  if (first) tries.push('/search' + qs({ track_name: title, artist_name: first }));
+  tries.push('/search' + qs({ q: (first + ' ' + title).trim() }));
+  for (const path of tries) {
+    const best = pick(await lrclibGet(path));
+    const p = toPayload(best);
+    if (p) return p;
+  }
+  return { status: 'none' };
+}
+
+// вызывается из poll(): следит за сменой трека и запускает загрузку текста
+function trackLyrics(st) {
+  if (!st || !st.ready || st.empty || !st.title) {
+    if (lyricsKey) { lyricsKey = ''; sendLyrics({ key: '', status: 'idle' }); }
+    return;
+  }
+  const key = st.title + '|' + st.artist;
+  if (key === lyricsKey) return;
+  // длительность на старте трека бывает ещё 0 — немного подождём, она нужна для точного поиска
+  if (!(st.duration > 0) && ++lyricsWaitTicks < 4) return;
+  lyricsWaitTicks = 0;
+  lyricsKey = key;
+  const seq = ++lyricsSeq;
+  const cached = lyricsCache.get(key);
+  if (cached) { sendLyrics({ key, ...cached }); return; }
+  sendLyrics({ key, status: 'loading' });
+  fetchLyrics(st).then((p) => {
+    if (lyricsCache.size > 100) lyricsCache.delete(lyricsCache.keys().next().value);
+    lyricsCache.set(key, p);
+    log('Текст песни:', key, '→', p.status, p.synced ? 'синхронный, строк ' + p.synced.length : '');
+    if (seq === lyricsSeq) sendLyrics({ key, ...p });
+  }).catch((err) => {
+    log('Текст песни ошибка:', key, err.message);
+    if (seq === lyricsSeq) sendLyrics({ key, status: 'error', error: err.message });
+  });
+}
+
+// ───────────────────── Поиск ─────────────────────
+// Ищем через поиск самого сайта (в скрытом окне, оно же продолжает играть музыку), забираем
+// найденные треки со страницы результатов, а «играть» — это клик по кнопке трека на этой странице.
+const ROWS_JS = `
+  const rowsOf = () => {
+    const inQueue = (r) => !!r.closest('[class*="PlayQueue_root"]');
+    const rows = Array.from(document.querySelectorAll('[class*="CommonTrack_root"]'))
+      .filter((r) => !inQueue(r) && !(r.parentElement && r.parentElement.closest('[class*="CommonTrack_root"]')));
+    if (rows.length) return rows;
+    // запасной вариант без привязки к названиям классов: строка трека = контейнер вокруг ссылки на трек
+    const seen = new Set();
+    const out = [];
+    for (const a of Array.from(document.querySelectorAll('a[href*="/track/"]'))) {
+      if (inQueue(a)) continue;
+      let el = a;
+      for (let i = 0; i < 7 && el.parentElement; i++) {
+        const p = el.parentElement;
+        const tracks = new Set(Array.from(p.querySelectorAll('a[href*="/track/"]')).map((x) => x.getAttribute('href')));
+        if (tracks.size > 1) break;
+        el = p;
+        if (el.querySelector('a[href*="/artist/"]') && el.querySelector('img')) break;
+      }
+      if (!seen.has(el)) { seen.add(el); out.push(el); }
+    }
+    return out;
+  };
+  const sigOf = (r) => (r.textContent || '').slice(0, 40);
+  const rowInfo = (r, i) => {
+    const tEl = r.querySelector('[class*="Meta_titleContainer"]');
+    let title = tEl ? ((tEl.innerText || tEl.textContent || '').split('\\n')[0]).trim() : '';
+    const img = r.querySelector('img');
+    if (!title) { const l = r.querySelector('a[href*="/track/"]'); if (l) title = ((l.innerText || l.textContent || '').split('\\n')[0]).trim(); }
+    if (!title && img) title = (img.alt || '').replace(/^Трек\\s+/, '');
+    const arts = Array.from(r.querySelectorAll('a[href*="/artist/"]')).map((a) => a.textContent.trim()).filter(Boolean);
+    return { i, title, artist: Array.from(new Set(arts)).join(', '), cover: img ? String(img.src || '') : '' };
+  };
+`;
+
+// вписываем запрос в поле поиска сайта и отправляем. Поле может появляться только на странице поиска —
+// тогда сначала кликаем по ссылке/кнопке «Поиск» (переход внутри сайта, музыка не прерывается)
+const SEARCH_SUBMIT_JS = (q) => `(async () => {
+  try {
+    ${ROWS_JS}
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const findInput = () => {
+      const all = Array.from(document.querySelectorAll('input')).filter((i) => {
+        const t = (i.type || 'text').toLowerCase();
+        return t === 'text' || t === 'search';
+      });
+      const hit = all.filter((i) => /поиск|search|найти|искать/i.test([i.placeholder, i.getAttribute('aria-label'), i.getAttribute('role'), i.name].join(' ')));
+      const vis = (list) => list.find((i) => i.offsetParent !== null) || list[0];
+      return vis(hit) || (all.length === 1 ? all[0] : null);
+    };
+    let el = findInput();
+    let opened = '';
+    if (!el) {
+      const searchish = (e) => /поиск|search/i.test([e.getAttribute('aria-label'), e.getAttribute('title'), (e.textContent || '').slice(0, 40)].join(' '));
+      const opener = document.querySelector('a[href="/search"]')
+        || document.querySelector('a[href^="/search"]')
+        || Array.from(document.querySelectorAll('a,button,[role=button],[role=link]')).find((e) => (e.textContent || '').length < 40 && searchish(e));
+      if (opener) {
+        opened = (opener.tagName + ' ' + (opener.getAttribute('href') || opener.getAttribute('aria-label') || opener.textContent || '')).slice(0, 80);
+        opener.click();
+        for (let i = 0; i < 15 && !el; i++) { await sleep(200); el = findInput(); }
+      }
+    }
+    if (!el) return JSON.stringify({ error: 'на сайте не найдено поле поиска', opened });
+    el.focus();
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(el, ${JSON.stringify(q)});
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    const form = el.closest('form');
+    if (form && form.requestSubmit) form.requestSubmit();
+    ['keydown', 'keypress', 'keyup'].forEach((type) => el.dispatchEvent(new KeyboardEvent(type, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true })));
+    return JSON.stringify({ ok: true, opened, sig: rowsOf().slice(0, 5).map(sigOf).join('|') });
+  } catch (e) { return JSON.stringify({ error: String(e) }); }
+})()`;
+
+// ждём, пока сайт откроет результаты именно этого запроса, и забираем треки
+const SEARCH_WAIT_JS = (q, sig, timeoutMs) => `(async () => {
+  try {
+    ${ROWS_JS}
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const norm = (s) => String(s).toLowerCase().replace(/[^\\p{L}\\p{N}]+/gu, '');
+    const want = norm(${JSON.stringify(q)});
+    const urlOk = () => { let u = location.href; try { u = decodeURIComponent(u.replace(/\\+/g, ' ')); } catch (e) { /* оставим как есть */ } return norm(u).includes(want); };
+    const oldSig = ${JSON.stringify(sig)};
+    const t0 = Date.now();
+    let last = -1, stable = 0, routed = false;
+    while (Date.now() - t0 < ${timeoutMs}) {
+      await sleep(300);
+      if (!urlOk()) continue;
+      routed = true;
+      const rows = rowsOf();
+      const s = rows.slice(0, 5).map(sigOf).join('|');
+      if (rows.length && (s !== oldSig || Date.now() - t0 > 4000)) {
+        if (rows.length === last) { if (++stable >= 2) break; } else { stable = 0; last = rows.length; }
+      }
+    }
+    if (!routed) return JSON.stringify({ route: false, url: location.href });
+    return JSON.stringify({ route: true, items: rowsOf().slice(0, 30).map(rowInfo), url: location.href });
+  } catch (e) { return JSON.stringify({ error: String(e) }); }
+})()`;
+
+const SEARCH_PLAY_JS = (idx, title, artist) => `(() => {
+  try {
+    ${ROWS_JS}
+    const T = ${JSON.stringify(String(title))}, A = ${JSON.stringify(String(artist))};
+    const same = (r) => { const x = rowInfo(r, 0); return x.title === T && x.artist === A; };
+    const rows = rowsOf();
+    let row = rows[${Number.isInteger(idx) ? idx : -1}];
+    if (!row || !same(row)) row = rows.find(same);
+    if (!row) return JSON.stringify({ notfound: true });
+    const pb = row.querySelector('[class*="PlayButtonWithCover_playButton"]')
+      || Array.from(row.querySelectorAll('button,[role=button]')).find((b) => /воспроизв|слушать|играть|play/i.test((b.getAttribute('aria-label') || '') + ' ' + (b.title || '')))
+      || row.querySelector('button')
+      || row.querySelector('img');
+    if (!pb) return JSON.stringify({ error: 'у трека нет кнопки play' });
+    pb.click();
+    return JSON.stringify({ ok: true });
+  } catch (e) { return JSON.stringify({ error: String(e) }); }
+})()`;
+
+let lastSearch = '';
+async function runSearch(query) {
+  const q = String(query || '').trim().slice(0, 200);
+  if (!q) return { items: [] };
+  if (!ymWin || ymWin.isDestroyed()) return { error: 'окно Яндекс Музыки недоступно' };
+  return withSite(async () => {
+    const wc = ymWin.webContents;
+    const run = async (code) => JSON.parse(await wc.executeJavaScript(code, true));
+    try {
+      const sub = await run(SEARCH_SUBMIT_JS(q));
+      if (sub.opened) log('Поиск: открыл поиск кликом по', sub.opened);
+      let sig0 = sub.sig;
+      if (sub.error) log('Поиск:', sub.error, '— пробую открыть страницу поиска напрямую');
+      const sig = q === lastSearch ? '\u0000' : sig0;
+      let res = sub.error ? { route: false } : await run(SEARCH_WAIT_JS(q, sig, 3500));
+      if (res.route === false && !sub.error) {
+        // форма не отправилась скриптом — пробуем настоящим нажатием Enter
+        wc.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
+        wc.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
+        res = await run(SEARCH_WAIT_JS(q, sig, 6000));
+      }
+      if (res.route === false) {
+        // последний вариант: открыть страницу поиска напрямую (это перезагружает сайт — текущий трек остановится)
+        log('Поиск: открываю страницу поиска напрямую');
+        await wc.loadURL(YM_URL + 'search?text=' + encodeURIComponent(q));
+        res = await run(SEARCH_WAIT_JS(q, '\u0000', 12000));
+      }
+      if (res.error) { log('Поиск:', res.error); return { error: res.error }; }
+      if (res.route === false) {
+        log('Поиск: сайт не открыл результаты, url =', res.url);
+        return { error: 'сайт не открыл результаты поиска. Открой Яндекс Музыку из трея и проверь, что ты вошёл в аккаунт' };
+      }
+      lastSearch = q;
+      log('Поиск:', q, '→ найдено', res.items.length, res.items[0] ? '(первый: ' + res.items[0].title + ')' : '');
+      return { items: res.items };
+    } catch (err) {
+      log('Поиск ошибка:', err.message);
+      return { error: err.message };
+    }
+  });
+}
+
+async function runSearchPlay(query, idx, title, artist) {
+  if (!ymWin || ymWin.isDestroyed()) return { error: 'окно Яндекс Музыки недоступно' };
+  const attempt = () => withSite(async () => JSON.parse(await ymWin.webContents.executeJavaScript(SEARCH_PLAY_JS(idx, title, artist), true)));
+  try {
+    let r = await attempt();
+    if (r.notfound) { // сайт успел уйти со страницы результатов — повторяем поиск и пробуем снова
+      const s = await runSearch(query);
+      if (s.error) return s;
+      r = await attempt();
+    }
+    if (r.notfound) return { error: 'трек не найден в результатах' };
+    if (r.error) { log('Поиск (play):', r.error); return r; }
+    return { ok: true };
+  } catch (err) {
+    log('Поиск (play) ошибка:', err.message);
+    return { error: err.message };
+  }
+}
+
+// Отладка поиска: ищет тестовый запрос и пишет в лог, как выглядит страница результатов
+async function diagnoseSearch() {
+  const r = await runSearch('Imagine Dragons');
+  log('ДИАГНОСТИКА ПОИСКА:', JSON.stringify(r).slice(0, 1500));
+  try {
+    const html = await withSite(() => ymWin.webContents.executeJavaScript(`(() => {
+      ${ROWS_JS}
+      const r = rowsOf()[0];
+      if (r) return r.outerHTML.slice(0, 3000);
+      const uniq = (a) => Array.from(new Set(a)).slice(0, 40);
+      return 'строк нет; url: ' + location.href
+        + '; поля ввода: ' + JSON.stringify(Array.from(document.querySelectorAll('input')).map((i) => ({ t: i.type, p: i.placeholder, a: i.getAttribute('aria-label') })))
+        + '; ссылки: ' + JSON.stringify(uniq(Array.from(document.querySelectorAll('a[href]')).map((a) => a.getAttribute('href'))))
+        + '; кнопки: ' + JSON.stringify(uniq(Array.from(document.querySelectorAll('button,[role=button]')).map((b) => (b.getAttribute('aria-label') || b.title || b.textContent || '').trim().slice(0, 30)).filter(Boolean)))
+        + '; ширина окна: ' + window.innerWidth;
+    })()`, true));
+    log('ДИАГНОСТИКА ПОИСКА (первая строка):', html);
+  } catch (err) {
+    log('ДИАГНОСТИКА ПОИСКА ошибка:', err.message);
+  }
+  shell.openPath(logFile);
 }
 
 // ───────────────────── Команды плееру ─────────────────────
@@ -513,6 +925,13 @@ ipcMain.handle('cmd', async (_e, name, arg) => {
 
 ipcMain.handle('queue', () => runQueue(-1));
 
+ipcMain.handle('search', (_e, q) => runSearch(q));
+ipcMain.handle('search-play', async (_e, q, idx, title, artist) => {
+  const res = await runSearchPlay(String(q || ''), Math.floor(num(idx, -1)), String(title || ''), String(artist || ''));
+  poll();
+  return res;
+});
+
 ipcMain.on('close-panel', () => setPanel(false));
 ipcMain.on('hud-pos', (_e, pos) => {
   const x = Number(pos && pos.x), y = Number(pos && pos.y);
@@ -520,6 +939,48 @@ ipcMain.on('hud-pos', (_e, pos) => {
   cfg.hudPos = { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) };
   saveConfig();
 });
+ipcMain.on('lyrics-ui', (_e, ui) => {
+  if (!ui || typeof ui !== 'object') return;
+  if (typeof ui.visible === 'boolean') cfg.lyricsVisible = ui.visible;
+  if (typeof ui.pinned === 'boolean') cfg.lyricsPinned = ui.pinned;
+  const p = ui.pos;
+  if (p && Number.isFinite(Number(p.x)) && Number.isFinite(Number(p.y))) {
+    const c01 = (v) => Math.min(1, Math.max(0, Number(v)));
+    const size = (v) => (Number.isFinite(Number(v)) ? Math.min(4000, Math.max(150, Math.round(Number(v)))) : undefined);
+    cfg.lyricsPos = { x: c01(p.x), y: c01(p.y), w: size(p.w), h: size(p.h) };
+  }
+  saveConfig();
+  buildTrayMenu();
+});
+ipcMain.on('appearance', (_e, a) => {
+  if (!a || typeof a !== 'object') return;
+  if (a.reset) {
+    cfg.theme = sanitizeTheme(DEFAULTS.theme);
+    cfg.hudOpacity = DEFAULTS.hudOpacity;
+    saveConfig();
+    sendConfig();
+    return;
+  }
+  if (a.theme && typeof a.theme === 'object') cfg.theme = sanitizeTheme({ ...cfg.theme, ...a.theme });
+  if (a.hudOpacity !== undefined && Number.isFinite(Number(a.hudOpacity))) cfg.hudOpacity = Math.min(1, Math.max(0.2, Number(a.hudOpacity)));
+  saveConfig();
+});
+function sendConfig() {
+  if (overlay && !overlay.isDestroyed()) overlay.webContents.send('config', configForOverlay());
+}
+// закрепить окно с текстом поверх всех окон / открепить (тогда оно видно только при открытой панели)
+function setLyricsPinned(on) {
+  if (on) cfg.lyricsVisible = true;
+  cfg.lyricsPinned = on;
+  saveConfig();
+  sendConfig();
+  buildTrayMenu();
+}
+function resetLyricsPos() {
+  cfg.lyricsPos = null;
+  saveConfig();
+  sendConfig();
+}
 function resetHudPos() {
   cfg.hudPos = null;
   saveConfig();
@@ -557,6 +1018,7 @@ function createOverlay() {
     const known = {};
     for (const [k, v] of Object.entries(iconCache)) if (v) known[k] = v;
     if (Object.keys(known).length) overlay.webContents.send('icons', known);
+    overlay.webContents.send('lyrics', lyricsPayload);
     overlay.showInactive();
     lastJson = ''; // отправить состояние заново, если оно ушло до загрузки оверлея
     poll();
@@ -604,6 +1066,8 @@ function buildTrayMenu() {
     { label: `Панель управления (${cfg.hotkeyPanel})`, click: () => setPanel(!panelOpen) },
     { label: 'Мини-плеер поверх окон', type: 'checkbox', checked: cfg.hudVisible, click: (i) => setHud(i.checked) },
     { label: 'Вернуть мини-плеер в угол (сбросить перетаскивание)', click: resetHudPos },
+    { label: `Текст песни закреплён поверх окон (${cfg.hotkeyLyrics})`, type: 'checkbox', checked: !!(cfg.lyricsVisible && cfg.lyricsPinned), click: (i) => setLyricsPinned(i.checked) },
+    { label: 'Вернуть окно текста на место', click: resetLyricsPos },
     { label: 'Открыть Яндекс Музыку (вход, поиск)', click: showYandex },
     { type: 'separator' },
     {
@@ -620,6 +1084,7 @@ function buildTrayMenu() {
     },
     { label: 'Отладка: собрать данные о плеере (запусти трек!)', click: diagnose },
     { label: 'Отладка: данные об очереди (запусти трек из плейлиста!)', click: diagnoseQueue },
+    { label: 'Отладка: данные о поиске (тестовый запрос)', click: diagnoseSearch },
     { label: 'Отладка: открыть лог', click: () => shell.openPath(logFile) },
     { type: 'separator' },
     { label: 'Выход', click: () => { quitting = true; app.quit(); } },
@@ -649,6 +1114,8 @@ if (!app.requestSingleInstanceLock()) {
 
     const okPanel = globalShortcut.register(cfg.hotkeyPanel, () => setPanel(!panelOpen));
     const okHud = globalShortcut.register(cfg.hotkeyHud, () => setHud(!cfg.hudVisible));
+    const okLy = globalShortcut.register(cfg.hotkeyLyrics, () => setLyricsPinned(!(cfg.lyricsVisible && cfg.lyricsPinned)));
+    if (!okLy) log('Не удалось занять хоткей', cfg.hotkeyLyrics, '— измени его в config.json');
     if (!okPanel) log('Не удалось занять хоткей', cfg.hotkeyPanel, '— измени его в config.json');
     if (!okHud) log('Не удалось занять хоткей', cfg.hotkeyHud, '— измени его в config.json');
 

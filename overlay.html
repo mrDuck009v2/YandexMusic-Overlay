@@ -6,14 +6,15 @@
       content="default-src 'self'; img-src 'self' https://*.yandex.net https://*.yandex.ru data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'">
 <title>YM Overlay</title>
 <style>
-  :root { --op: 0.7; --accent: #ffcc00; }
+  :root { --op: 0.7; --accent: #ffcc00; --acc: 255,204,0; --bg: 18,18,22; --bgp: 24,24,29; --fg: 255,255,255;
+    --lyop: 0.7; --pop: 0.96; --lyfs: 16px; --rad: 14px; --blurf: blur(14px); --onacc: #111; }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; overflow: hidden; background: transparent;
-    font-family: "Segoe UI", system-ui, sans-serif; color: #fff; user-select: none; }
+    font-family: "Segoe UI", system-ui, sans-serif; color: rgb(var(--fg)); user-select: none; }
 
   /* ───────── Мини-плеер (HUD) ───────── */
   #hud { position: fixed; width: 330px; padding: 10px; display: flex; gap: 12px; align-items: center;
-    background: rgba(18, 18, 22, var(--op)); border-radius: 14px; backdrop-filter: blur(14px);
+    background: rgba(var(--bg), var(--op)); border-radius: var(--rad); backdrop-filter: var(--blurf);
     transition: opacity .25s, transform .25s; overflow: hidden; z-index: 10; touch-action: none; }
   #hud.free { right: auto; bottom: auto; }
   #hud.dragging { transition: none; }
@@ -25,7 +26,9 @@
   #hud .cover { width: 52px; height: 52px; border-radius: 8px; background: #333 center/cover; flex: none; }
   #hud .txt { min-width: 0; flex: 1; }
   #hud .t { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #hud .a { font-size: 12px; color: rgba(255,255,255,.7); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #hud .l { margin-top: 3px; font-size: 12px; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #hud .l:empty { display: none; }
+  #hud .a { font-size: 12px; color: rgba(var(--fg),.7); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #hud .bar { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--accent); width: 0; transition: width .5s linear; }
   #hud .state { font-size: 14px; flex: none; opacity: .8; display: flex; align-items: center; }
   #hud .state svg { width: 20px; height: 20px; }
@@ -35,52 +38,108 @@
     justify-content: center; opacity: 0; pointer-events: none; transition: opacity .18s; }
   body.open #backdrop { opacity: 1; pointer-events: auto; }
   body.open #hud, body.open #hud.hidden { opacity: 1; transform: none; cursor: grab;
-    outline: 2px dashed rgba(255,204,0,.7); outline-offset: -2px; }
+    outline: 2px dashed rgba(var(--acc),.7); outline-offset: -2px; }
   body.open #hud.dragging { cursor: grabbing; }
-  #panel { width: 600px; max-width: 92vw; background: rgba(24,24,29,.96); border-radius: 18px; padding: 22px;
+  #panel { width: 600px; max-width: 92vw; background: rgba(var(--bgp), var(--pop)); border-radius: calc(var(--rad) + 4px); padding: 22px;
     box-shadow: 0 20px 60px rgba(0,0,0,.6); transform: scale(.97); transition: transform .18s; }
   body.open #panel { transform: scale(1); }
   .top { display: flex; gap: 18px; }
   .top .cover { width: 150px; height: 150px; border-radius: 12px; background: #333 center/cover; flex: none; }
   .info { min-width: 0; flex: 1; display: flex; flex-direction: column; justify-content: center; }
   .info .t { font-size: 20px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .info .a { font-size: 14px; color: rgba(255,255,255,.7); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .info .al { font-size: 12px; color: rgba(255,255,255,.45); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .info .a { font-size: 14px; color: rgba(var(--fg),.7); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .info .al { font-size: 12px; color: rgba(var(--fg),.45); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-  .seek { display: flex; align-items: center; gap: 10px; margin: 18px 0 8px; font-size: 12px; color: rgba(255,255,255,.6); }
+  .seek { display: flex; align-items: center; gap: 10px; margin: 18px 0 8px; font-size: 12px; color: rgba(var(--fg),.6); }
   input[type=range] { -webkit-appearance: none; appearance: none; height: 5px; border-radius: 3px;
-    background: rgba(255,255,255,.2); outline: none; flex: 1; cursor: pointer; }
+    background: rgba(var(--fg),.2); outline: none; flex: 1; cursor: pointer; }
   input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 13px; height: 13px; border-radius: 50%; background: var(--accent); }
 
   .controls { display: flex; align-items: center; justify-content: center; gap: 10px; }
-  button { font: inherit; color: #fff; background: rgba(255,255,255,.08); border: none; cursor: pointer;
+  button { font: inherit; color: rgb(var(--fg)); background: rgba(var(--fg),.08); border: none; cursor: pointer;
     border-radius: 10px; padding: 8px 14px; font-size: 16px; transition: background .12s; }
-  button:hover { background: rgba(255,255,255,.18); }
-  button.active { color: var(--accent); background: rgba(255,204,0,.22); box-shadow: inset 0 0 0 1.5px var(--accent); }
+  button:hover { background: rgba(var(--fg),.18); }
+  button.active { color: var(--accent); background: rgba(var(--acc),.22); box-shadow: inset 0 0 0 1.5px var(--accent); }
   button { display: inline-flex; align-items: center; justify-content: center; }
   svg { fill: currentColor; flex: none; }
   .controls button svg { width: 22px; height: 22px; }
   button.big svg { width: 28px; height: 28px; }
   #vIcon { display: inline-flex; width: 22px; height: 22px; align-items: center; justify-content: center; }
   #vIcon svg { width: 22px; height: 22px; }
-  button.big { width: 56px; height: 56px; border-radius: 50%; background: var(--accent); color: #111; font-size: 22px; }
-  button.big:hover { background: #ffd83a; }
+  button.big { width: 56px; height: 56px; border-radius: 50%; background: var(--accent); color: var(--onacc); font-size: 22px; }
+  button.big:hover { filter: brightness(1.12); }
   .vol { display: flex; align-items: center; gap: 8px; margin-left: 14px; width: 140px; }
 
-  #queueWrap { margin-top: 18px; }
-  #queueWrap h4 { margin: 0 0 6px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: rgba(255,255,255,.45); }
-  #queue { max-height: 200px; overflow-y: auto; border-radius: 10px; background: rgba(255,255,255,.04); }
-  #queue::-webkit-scrollbar { width: 8px; }
-  #queue::-webkit-scrollbar-thumb { background: rgba(255,255,255,.2); border-radius: 4px; }
+  /* ───────── Вкладки: очередь / текст / поиск ───────── */
+  #tabs { display: flex; gap: 8px; margin-top: 18px; }
+  #tabs .tab { font-size: 12px; font-weight: 600; padding: 6px 14px; color: rgba(var(--fg),.7); }
+  .pane { display: none; margin-top: 8px; height: 230px; overflow-y: auto; border-radius: 10px; background: rgba(var(--fg),.04); }
+  .pane.show { display: block; }
+  .pane::-webkit-scrollbar, #sres::-webkit-scrollbar { width: 8px; }
+  .pane::-webkit-scrollbar-thumb, #sres::-webkit-scrollbar-thumb { background: rgba(var(--fg),.2); border-radius: 4px; }
+
+  /* текст песни */
+  #lyw { position: fixed; right: 20px; bottom: 20px; width: 380px; height: 340px; min-width: 240px; min-height: 150px;
+    max-width: 95vw; max-height: 95vh; display: none; flex-direction: column; overflow: hidden; resize: both; z-index: 11;
+    background: rgba(var(--bg), var(--lyop)); border-radius: var(--rad); backdrop-filter: var(--blurf); touch-action: none; }
+  #lyw.show { display: flex; }
+  #lyw.free { right: auto; bottom: auto; }
+  body.open #lyw { outline: 2px dashed rgba(var(--acc),.7); outline-offset: -2px; }
+  #lyHead { display: none; flex: none; align-items: center; gap: 6px; padding: 6px 8px 4px 12px; font-size: 12px; font-weight: 600;
+    color: rgba(var(--fg),.55); cursor: grab; }
+  body.open #lyHead { display: flex; }
+  #lyHead.dragging { cursor: grabbing; }
+  #lyHead .sp { flex: 1; }
+  #lyHead button { padding: 3px 8px; font-size: 12px; }
+  #lyrics { flex: 1; min-height: 0; overflow-y: auto; position: relative; text-align: center; }
+  body:not(.open) #lyrics { overflow: hidden; }
+  #lyrics::-webkit-scrollbar { width: 8px; }
+  #lyrics::-webkit-scrollbar-thumb { background: rgba(var(--fg),.2); border-radius: 4px; }
+  .ly { padding: 5px 8px; font-size: var(--lyfs); font-weight: 600; line-height: 1.3; color: rgba(var(--fg),.35); cursor: pointer; transition: color .25s, transform .25s; }
+  .ly:hover { color: rgba(var(--fg),.65); }
+  .ly.past { color: rgba(var(--fg),.22); }
+  .ly.on { color: rgb(var(--fg)); transform: scale(1.06); }
+  .lmsg { padding: 40px 16px; font-size: 13px; color: rgba(var(--fg),.5); }
+  .lplain { padding: 12px 16px; white-space: pre-wrap; font-size: 14px; line-height: 1.55; color: rgba(var(--fg),.82); }
+  .lsrc { padding: 8px 0 2px; font-size: 11px; color: rgba(var(--fg),.3); }
+
+  /* поиск */
+  #searchPane.show { display: flex; flex-direction: column; }
+  .srow { display: flex; gap: 8px; padding: 8px; }
+  #sq { flex: 1; min-width: 0; font: inherit; font-size: 13px; color: rgb(var(--fg)); background: rgba(var(--fg),.1); border: none; outline: none;
+    border-radius: 8px; padding: 8px 12px; user-select: text; }
+  #sq:focus { box-shadow: inset 0 0 0 1.5px var(--accent); }
+  #sGo { font-size: 13px; padding: 8px 14px; }
+  #sGo:disabled { opacity: .5; cursor: default; }
+  #sstat { padding: 0 12px 6px; font-size: 12px; color: rgba(var(--fg),.45); min-height: 18px; }
+  #sres { flex: 1; overflow-y: auto; }
+  .q .sc { width: 28px; height: 28px; border-radius: 5px; background: #333; flex: none; align-self: center; object-fit: cover; }
+  .q.sr { align-items: center; }
   .q { display: flex; gap: 10px; padding: 7px 12px; font-size: 13px; cursor: pointer; align-items: baseline; }
-  .q:hover { background: rgba(255,255,255,.08); }
+  .q:hover { background: rgba(var(--fg),.08); }
   .q.cur { color: var(--accent); }
-  .q .n { width: 26px; text-align: right; color: rgba(255,255,255,.4); flex: none; }
+  .q .n { width: 26px; text-align: right; color: rgba(var(--fg),.4); flex: none; }
   .q .tt { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .q .aa { color: rgba(255,255,255,.5); max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .foot { display: flex; justify-content: space-between; align-items: center; margin-top: 16px; font-size: 12px; color: rgba(255,255,255,.4); }
+  .q .aa { color: rgba(var(--fg),.5); max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .foot { display: flex; justify-content: space-between; align-items: center; margin-top: 16px; font-size: 12px; color: rgba(var(--fg),.4); }
   .foot button { font-size: 12px; padding: 6px 12px; }
-  #notReady { display: none; margin: 14px 0 0; padding: 10px 12px; border-radius: 10px; background: rgba(255,204,0,.12); color: #ffe07a; font-size: 13px; }
+  #notReady { display: none; margin: 14px 0 0; padding: 10px 12px; border-radius: 10px; background: rgba(var(--acc),.12); color: rgb(var(--acc)); font-size: 13px; }
+
+  /* ───────── Вкладка «Вид» ───────── */
+  #stylePane.show { display: block; padding: 4px 0; }
+  .st { display: flex; align-items: center; gap: 8px; padding: 5px 12px; font-size: 12px; }
+  .st .lb { width: 150px; flex: none; color: rgba(var(--fg),.7); }
+  .st input[type=range] { flex: 1; min-width: 0; }
+  .st .val { width: 40px; text-align: right; color: rgba(var(--fg),.5); flex: none; }
+  .st .sws { display: flex; gap: 5px; flex: 1; flex-wrap: wrap; }
+  .sw { width: 18px; height: 18px; min-width: 0; padding: 0; border-radius: 50%; box-shadow: inset 0 0 0 1px rgba(128,128,128,.55); }
+  .sw:hover { background-blend-mode: normal; transform: scale(1.12); }
+  .sw.on { box-shadow: 0 0 0 2px rgba(var(--bgp),1), 0 0 0 4px var(--accent); }
+  .hx { width: 76px; flex: none; font: inherit; font-size: 12px; color: rgb(var(--fg)); background: rgba(var(--fg),.1); border: none; outline: none;
+    border-radius: 6px; padding: 4px 8px; user-select: text; }
+  .hx:focus { box-shadow: inset 0 0 0 1.5px var(--accent); }
+  .st input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; }
+  .st .rst { margin-left: auto; font-size: 12px; padding: 5px 12px; }
 </style>
 </head>
 <body>
@@ -90,9 +149,19 @@
   <div class="txt">
     <div class="t" id="hTitle">Яндекс Музыка</div>
     <div class="a" id="hArtist">загрузка…</div>
+    <div class="l" id="hLy"></div>
   </div>
   <div class="state" id="hState">▶</div>
   <div class="bar" id="hBar"></div>
+</div>
+
+<div id="lyw">
+  <div id="lyHead">
+    <span>Текст песни</span><span class="sp"></span>
+    <button id="lyPin" title="Закрепить поверх окон">📌</button>
+    <button id="lyClose" title="Скрыть">✕</button>
+  </div>
+  <div id="lyrics"></div>
 </div>
 
 <div id="backdrop">
@@ -124,9 +193,21 @@
 
     <div id="notReady">Плеер Яндекс Музыки ещё не готов. Нажми «Открыть Яндекс Музыку», войди в аккаунт и запусти любой трек.</div>
 
-    <div id="queueWrap">
-      <h4>Очередь</h4>
-      <div id="queue"></div>
+    <div id="tabs">
+      <button class="tab active" data-tab="queue">Очередь</button>
+      <button class="tab" id="bLyShow" title="Показать/скрыть плавающий текст песни">Текст</button>
+      <button class="tab" data-tab="search">Поиск</button>
+      <button class="tab" data-tab="style">Вид</button>
+    </div>
+    <div id="queue" class="pane show"></div>
+    <div id="stylePane" class="pane"></div>
+    <div id="searchPane" class="pane">
+      <div class="srow">
+        <input id="sq" type="text" placeholder="Трек или исполнитель…" autocomplete="off" spellcheck="false">
+        <button id="sGo">Найти</button>
+      </div>
+      <div id="sstat"></div>
+      <div id="sres"></div>
     </div>
 
     <div class="foot">
@@ -141,14 +222,33 @@
   const fmt = (s) => { s = Math.max(0, Math.floor(s || 0)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
 
   let state = { ready: false };
+  let stateAt = performance.now(); // когда пришло последнее состояние — для плавной подсветки строк
   const icons = {}; // href -> { vb, html } — иконки из спрайта самого сайта
-  let cfg = { hudCorner: 'top-right', hudOpacity: 0.7, hudVisible: true, hudFlash: true, hotkeyPanel: '', hudPos: null };
+  let cfg = { hudCorner: 'top-right', hudOpacity: 0.7, hudVisible: true, hudFlash: true, hotkeyPanel: '', hudPos: null, hudLyrics: true, lyricsOffset: 0, lyricsVisible: true, lyricsPinned: false, lyricsPos: null };
   let panelOpen = false, seeking = false, volDragging = false;
   let flashTimer = null, flashing = false, lastTrackKey = '';
 
   // ───────── иконки сайта ─────────
   const SVG_NS = 'http://www.w3.org/2000/svg';
-  const SVG_OK = new Set(['g', 'path', 'circle', 'rect', 'ellipse', 'line', 'polyline', 'polygon', 'defs', 'clippath', 'mask', 'lineargradient', 'radialgradient', 'stop']);
+  const SVG_OK = new Set(['g', 'path', 'circle', 'rect', 'ellipse', 'line', 'polyline', 'polygon', 'defs', 'clippath', 'mask', 'lineargradient', 'radialgradient', 'stop', 'filter', 'fegaussianblur', 'feoffset', 'feblend', 'fecolormatrix', 'feflood', 'fecomposite', 'femerge', 'femergenode']);
+  // У иконок сайта внутри часто есть <mask>/<clipPath> с одинаковыми id (a, b, mask0 …).
+  // Когда несколько иконок лежат в одном документе, id сталкиваются и маска берётся от чужой иконки —
+  // из-за этого «предыдущая/следующая» превращались в белые квадраты. Делаем id уникальными.
+  let svgSeq = 0;
+  function uniquifyIds(svg) {
+    const prefix = 'ymi' + (++svgSeq) + '-';
+    const ids = new Set();
+    svg.querySelectorAll('[id]').forEach((el) => ids.add(el.getAttribute('id')));
+    if (!ids.size) return;
+    const fix = (v) => v.replace(/url\(\s*(['"]?)#([^)'"\s]+)\1\s*\)/g, (m, q, id) => (ids.has(id) ? 'url(#' + prefix + id + ')' : m));
+    const all = [svg, ...svg.querySelectorAll('*')];
+    for (const el of all) {
+      if (el.hasAttribute('id') && ids.has(el.getAttribute('id'))) el.setAttribute('id', prefix + el.getAttribute('id'));
+      for (const a of Array.from(el.attributes)) {
+        if (a.value.includes('url(')) el.setAttribute(a.name, fix(a.value));
+      }
+    }
+  }
   function buildSvg(def) {
     const svg = document.createElementNS(SVG_NS, 'svg');
     svg.setAttribute('viewBox', def.vb);
@@ -167,6 +267,11 @@
       }
     };
     copy(doc.documentElement, svg);
+    uniquifyIds(svg);
+    // У иконок сайта корень <svg> без заливки, а нужные фигуры имеют явный fill="currentColor";
+    // служебные <rect> без fill (рамка иконки) на сайте поэтому невидимы. У нас же в CSS svg { fill: currentColor },
+    // и такие прямоугольники превращались в белые квадраты — выключаем заливку по умолчанию.
+    if (svg.querySelector('[fill]:not([fill="none"])')) svg.style.fill = 'none';
     return svg;
   }
   function setIcon(el, role, fallback) {
@@ -321,23 +426,348 @@
     });
   }
 
+  // ───────── вкладки ─────────
+  let tab = 'queue';
+  function setTab(name) {
+    tab = name;
+    document.querySelectorAll('#tabs .tab[data-tab]').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
+    $('queue').classList.toggle('show', name === 'queue');
+    $('searchPane').classList.toggle('show', name === 'search');
+    $('stylePane').classList.toggle('show', name === 'style');
+    if (name === 'queue') markCurrentInQueue(true);
+    if (name === 'search') $('sq').focus();
+  }
+  document.querySelectorAll('#tabs .tab[data-tab]').forEach((b) => { b.onclick = () => setTab(b.dataset.tab); });
+
+  // ───────── текст песни ─────────
+  let lyr = { status: 'idle' };
+  let lyrIdx = -2, lastWheel = 0;
+  const lyricsOn = () => lyr.status === 'ok' && Array.isArray(lyr.synced) && lyr.synced.length > 0;
+
+  // текущая позиция трека: последнее известное значение + время, прошедшее с его получения
+  function curPos() {
+    if (!state.ready || state.empty) return 0;
+    let p = Number(state.position) || 0;
+    if (state.playing) p += (performance.now() - stateAt) / 1000;
+    if (state.duration) p = Math.min(p, state.duration);
+    return p + (Number(cfg.lyricsOffset) || 0);
+  }
+
+  function renderLyrics() {
+    const box = $('lyrics');
+    box.textContent = '';
+    box.classList.remove('synced');
+    lyrIdx = -2;
+    const msg = (t) => { const d = document.createElement('div'); d.className = 'lmsg'; d.textContent = t; box.appendChild(d); };
+    const src = () => { const d = document.createElement('div'); d.className = 'lsrc'; d.textContent = 'Текст: ' + (lyr.source || 'LRCLIB'); box.appendChild(d); };
+    if (lyr.status === 'loading') msg('Ищем текст…');
+    else if (lyr.status === 'none') msg('Текст для этого трека не найден');
+    else if (lyr.status === 'instrumental') msg('Инструментальный трек');
+    else if (lyr.status === 'error') msg('Не удалось загрузить текст (' + (lyr.error || 'нет сети') + ')');
+    else if (lyricsOn()) {
+      box.classList.add('synced');
+      lyr.synced.forEach((l, i) => {
+        const d = document.createElement('div');
+        d.className = 'ly';
+        d.dataset.i = i;
+        d.textContent = l.text || '♪';
+        d.onclick = () => window.ym.cmd('seek', Math.max(0, l.t - (Number(cfg.lyricsOffset) || 0)));
+        box.appendChild(d);
+      });
+      src();
+    } else if (lyr.status === 'ok' && lyr.plain) {
+      const d = document.createElement('div');
+      d.className = 'lplain';
+      d.textContent = lyr.plain;
+      box.appendChild(d);
+      src();
+    } else msg('Запусти трек — здесь появится текст');
+    fitLyPad();
+    tickLyrics(true);
+  }
+  // отступы сверху/снизу, чтобы первая и последняя строки тоже могли встать по центру окна
+  function fitLyPad() {
+    const b = $('lyrics');
+    const pad = b.classList.contains('synced') ? Math.max(30, Math.round(b.clientHeight / 2 - 24)) : 0;
+    b.style.paddingTop = b.style.paddingBottom = pad + 'px';
+  }
+
+  function scrollToLine(el, instant) {
+    if (!el) return;
+    if (!instant && Date.now() - lastWheel < 3000) return; // человек сам листает — не мешаем
+    const box = $('lyrics');
+    box.scrollTo({ top: el.offsetTop - box.clientHeight / 2 + el.offsetHeight / 2, behavior: instant ? 'auto' : 'smooth' });
+  }
+
+  function tickLyrics(force) {
+    let idx = -1;
+    if (lyricsOn()) {
+      const p = curPos(), L = lyr.synced;
+      let lo = 0, hi = L.length - 1;
+      while (lo <= hi) { // последняя строка, время которой уже наступило
+        const mid = (lo + hi) >> 1;
+        if (L[mid].t <= p + 0.05) { idx = mid; lo = mid + 1; } else hi = mid - 1;
+      }
+    }
+    if (idx === lyrIdx && !force) return;
+    const first = lyrIdx === -2;
+    lyrIdx = idx;
+    $('hLy').textContent = cfg.hudLyrics && idx >= 0 ? (lyr.synced[idx].text || '') : '';
+    if (!lyricsOn()) return;
+    const rows = $('lyrics').querySelectorAll('.ly');
+    rows.forEach((r, i) => { r.classList.toggle('on', i === idx); r.classList.toggle('past', i < idx); });
+    if (idx >= 0 && lywShown()) scrollToLine(rows[idx], force || first);
+  }
+  setInterval(tickLyrics, 150);
+  $('lyrics').addEventListener('wheel', () => { lastWheel = Date.now(); });
+
+  // ───────── плавающее окно с текстом ─────────
+  const lywShown = () => !!cfg.lyricsVisible && (panelOpen || !!cfg.lyricsPinned);
+  const clamp01 = (v) => Math.min(1, Math.max(0, v));
+  function saveLyUi(withPos) {
+    const ui = { visible: !!cfg.lyricsVisible, pinned: !!cfg.lyricsPinned };
+    if (withPos) {
+      const r = $('lyw').getBoundingClientRect();
+      const maxX = Math.max(1, window.innerWidth - r.width), maxY = Math.max(1, window.innerHeight - r.height);
+      cfg.lyricsPos = { x: clamp01(r.left / maxX), y: clamp01(r.top / maxY), w: Math.round(r.width), h: Math.round(r.height) };
+      ui.pos = cfg.lyricsPos;
+    }
+    window.ym.lyricsUi(ui);
+  }
+  function applyLyPos() {
+    const w = $('lyw'), p = cfg.lyricsPos;
+    if (!p) { w.classList.remove('free'); w.style.left = w.style.top = w.style.width = w.style.height = ''; return; }
+    w.classList.add('free');
+    if (p.w) w.style.width = p.w + 'px';
+    if (p.h) w.style.height = p.h + 'px';
+    w.style.left = Math.round(p.x * Math.max(0, window.innerWidth - w.offsetWidth)) + 'px';
+    w.style.top = Math.round(p.y * Math.max(0, window.innerHeight - w.offsetHeight)) + 'px';
+  }
+  function updateLyw() {
+    const w = $('lyw');
+    const show = lywShown();
+    w.classList.toggle('show', show);
+    $('lyPin').classList.toggle('active', !!cfg.lyricsPinned);
+    $('lyPin').title = cfg.lyricsPinned ? 'Открепить (скрывать вместе с панелью)' : 'Закрепить поверх окон';
+    $('bLyShow').classList.toggle('active', !!cfg.lyricsVisible);
+    if (show) { applyLyPos(); fitLyPad(); tickLyrics(true); }
+  }
+  $('lyPin').onclick = () => { cfg.lyricsPinned = !cfg.lyricsPinned; saveLyUi(false); updateLyw(); };
+  $('lyClose').onclick = () => { cfg.lyricsVisible = false; saveLyUi(false); updateLyw(); };
+  $('bLyShow').onclick = () => { cfg.lyricsVisible = !cfg.lyricsVisible; saveLyUi(false); updateLyw(); };
+
+  // перетаскивание за заголовок (пока открыта панель)
+  let lyDrag = null;
+  $('lyHead').addEventListener('pointerdown', (e) => {
+    if (e.button !== 0 || e.target.closest('button')) return;
+    const r = $('lyw').getBoundingClientRect();
+    lyDrag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+    $('lyHead').setPointerCapture(e.pointerId);
+    $('lyHead').classList.add('dragging');
+    e.preventDefault();
+  });
+  $('lyHead').addEventListener('pointermove', (e) => {
+    if (!lyDrag) return;
+    const w = $('lyw');
+    const maxX = Math.max(1, window.innerWidth - w.offsetWidth), maxY = Math.max(1, window.innerHeight - w.offsetHeight);
+    const x = Math.min(maxX, Math.max(0, e.clientX - lyDrag.dx)), y = Math.min(maxY, Math.max(0, e.clientY - lyDrag.dy));
+    cfg.lyricsPos = { ...(cfg.lyricsPos || {}), x: x / maxX, y: y / maxY, w: w.offsetWidth, h: w.offsetHeight };
+    applyLyPos();
+  });
+  const endLyDrag = () => {
+    if (!lyDrag) return;
+    lyDrag = null;
+    $('lyHead').classList.remove('dragging');
+    saveLyUi(true);
+  };
+  $('lyHead').addEventListener('pointerup', endLyDrag);
+  $('lyHead').addEventListener('pointercancel', endLyDrag);
+
+  // изменение размера (тянут за угол) — запоминаем
+  let lyResizeTimer = null;
+  new ResizeObserver(() => {
+    if (!$('lyw').classList.contains('show')) return;
+    fitLyPad();
+    if (!panelOpen || lyDrag) return;
+    clearTimeout(lyResizeTimer);
+    lyResizeTimer = setTimeout(() => {
+      const p = cfg.lyricsPos, w = $('lyw');
+      if (!p || Math.abs((p.w || 0) - w.offsetWidth) > 2 || Math.abs((p.h || 0) - w.offsetHeight) > 2) saveLyUi(true);
+    }, 400);
+  }).observe($('lyw'));
+  window.addEventListener('resize', () => { applyLyPos(); fitLyPad(); });
+
+  // ───────── вид: цвета, прозрачность и т.п. ─────────
+  const DEF_THEME = { accent: '#ffcc00', bg: '#121216', fg: '#ffffff', lyricsOpacity: 0.7, panelOpacity: 0.96, lyricsFontSize: 16, radius: 14, blur: true };
+  const SW = {
+    accent: ['#ffcc00', '#ff8a3d', '#ff5a5f', '#ff5cc8', '#a46bff', '#5b8cff', '#2dd4ff', '#3ddc84', '#ffffff'],
+    bg: ['#121216', '#000000', '#1a2433', '#1b1b2f', '#0f1f1a', '#2a1220', '#f2f2f2', '#ffffff'],
+    fg: ['#ffffff', '#e0e0e0', '#ffe9a8', '#bff5d6', '#9ad7ff', '#222222', '#000000'],
+  };
+  const hexToRgb = (h) => { const m = /^#([0-9a-f]{6})$/i.exec(h || ''); if (!m) return null; const n = parseInt(m[1], 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; };
+  const lum = (c) => (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) / 255;
+  const themeVal = (k) => (k === 'hudOpacity' ? cfg.hudOpacity : (cfg.theme && cfg.theme[k] != null ? cfg.theme[k] : DEF_THEME[k]));
+  const nclamp = (v, a, b, d) => (Number.isFinite(Number(v)) ? Math.min(b, Math.max(a, Number(v))) : d);
+
+  function applyTheme() {
+    const t = { ...DEF_THEME, ...(cfg.theme || {}) };
+    const acc = hexToRgb(t.accent) || hexToRgb(DEF_THEME.accent), bg = hexToRgb(t.bg) || hexToRgb(DEF_THEME.bg), fg = hexToRgb(t.fg) || hexToRgb(DEF_THEME.fg);
+    const r = document.documentElement.style;
+    r.setProperty('--accent', '#' + acc.map((v) => v.toString(16).padStart(2, '0')).join(''));
+    r.setProperty('--acc', acc.join(','));
+    r.setProperty('--bg', bg.join(','));
+    const d = lum(bg) > 0.5 ? -8 : 8; // панель чуть отличается от плашек
+    r.setProperty('--bgp', bg.map((v) => Math.min(255, Math.max(0, v + d))).join(','));
+    r.setProperty('--fg', fg.join(','));
+    r.setProperty('--onacc', lum(acc) > 0.6 ? '#111' : '#fff');
+    r.setProperty('--op', nclamp(cfg.hudOpacity, 0.2, 1, 0.7));
+    r.setProperty('--lyop', nclamp(t.lyricsOpacity, 0.1, 1, 0.7));
+    r.setProperty('--pop', nclamp(t.panelOpacity, 0.5, 1, 0.96));
+    r.setProperty('--lyfs', nclamp(t.lyricsFontSize, 12, 32, 16) + 'px');
+    r.setProperty('--rad', nclamp(t.radius, 0, 28, 14) + 'px');
+    r.setProperty('--blurf', t.blur === false ? 'none' : 'blur(14px)');
+  }
+
+  let pendingApp = null, appTimer = null;
+  function setLook(key, val) {
+    if (key === 'hudOpacity') cfg.hudOpacity = val;
+    else cfg.theme = { ...DEF_THEME, ...(cfg.theme || {}), [key]: val };
+    applyTheme();
+    pendingApp = pendingApp || {};
+    if (key === 'hudOpacity') pendingApp.hudOpacity = val;
+    else pendingApp.theme = { ...(pendingApp.theme || {}), [key]: val };
+    clearTimeout(appTimer);
+    appTimer = setTimeout(() => { const a = pendingApp; pendingApp = null; window.ym.setAppearance(a); }, 300);
+  }
+
+  const syncers = [];
+  const syncStyle = () => syncers.forEach((f) => f());
+  (function buildStylePane() {
+    const box = $('stylePane');
+    const row = (label) => {
+      const r = document.createElement('div'); r.className = 'st';
+      const l = document.createElement('span'); l.className = 'lb'; l.textContent = label;
+      r.appendChild(l); box.appendChild(r);
+      return r;
+    };
+    const color = (label, key) => {
+      const r = row(label);
+      const sws = document.createElement('span'); sws.className = 'sws';
+      const btns = SW[key].map((c) => {
+        const b = document.createElement('button');
+        b.className = 'sw'; b.style.background = c; b.title = c;
+        b.onclick = () => { setLook(key, c); syncStyle(); };
+        sws.appendChild(b);
+        return b;
+      });
+      const hx = document.createElement('input');
+      hx.type = 'text'; hx.className = 'hx'; hx.maxLength = 7; hx.spellcheck = false; hx.placeholder = '#rrggbb';
+      hx.addEventListener('input', () => {
+        let v = hx.value.trim(); if (v && v[0] !== '#') v = '#' + v;
+        if (/^#[0-9a-f]{6}$/i.test(v)) { setLook(key, v.toLowerCase()); syncStyle(); }
+      });
+      r.append(sws, hx);
+      syncers.push(() => {
+        const v = String(themeVal(key)).toLowerCase();
+        btns.forEach((b, i) => b.classList.toggle('on', SW[key][i] === v));
+        if (document.activeElement !== hx) hx.value = v;
+      });
+    };
+    const range = (label, key, min, max, step, fmt) => {
+      const r = row(label);
+      const inp = document.createElement('input'); inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step;
+      const val = document.createElement('span'); val.className = 'val';
+      inp.addEventListener('input', () => { const v = Number(inp.value); val.textContent = fmt(v); setLook(key, v); });
+      r.append(inp, val);
+      syncers.push(() => { inp.value = themeVal(key); val.textContent = fmt(Number(inp.value)); });
+    };
+    const check = (label, key) => {
+      const r = row(label);
+      const inp = document.createElement('input'); inp.type = 'checkbox';
+      inp.addEventListener('change', () => setLook(key, inp.checked));
+      r.appendChild(inp);
+      syncers.push(() => { inp.checked = themeVal(key) !== false; });
+    };
+    const pct = (v) => Math.round(v * 100) + '%';
+    color('Акцентный цвет', 'accent');
+    color('Фон плашек', 'bg');
+    color('Цвет текста', 'fg');
+    range('Прозрачность мини-плеера', 'hudOpacity', 0.2, 1, 0.05, pct);
+    range('Прозрачность окна текста', 'lyricsOpacity', 0.1, 1, 0.05, pct);
+    range('Прозрачность панели', 'panelOpacity', 0.5, 1, 0.02, pct);
+    range('Размер текста песни', 'lyricsFontSize', 12, 32, 1, (v) => v + 'px');
+    range('Скругление углов', 'radius', 0, 28, 1, (v) => v + 'px');
+    check('Размытие фона за плашками', 'blur');
+    const rr = row('');
+    const rb = document.createElement('button'); rb.className = 'rst'; rb.textContent = 'Сбросить вид';
+    rb.onclick = () => { pendingApp = null; clearTimeout(appTimer); window.ym.setAppearance({ reset: true }); };
+    rr.appendChild(rb);
+    syncStyle();
+  })();
+
+  // ───────── поиск ─────────
+  let sBusy = false, sQuery = '';
+  const setStat = (t) => { $('sstat').textContent = t || ''; };
+  async function doSearch() {
+    const q = $('sq').value.trim();
+    if (!q || sBusy) return;
+    sBusy = true;
+    sQuery = q;
+    $('sGo').disabled = true;
+    $('sres').textContent = '';
+    setStat('Ищем…');
+    let res;
+    try { res = await window.ym.search(q); } catch (e) { res = { error: String((e && e.message) || e) }; }
+    sBusy = false;
+    $('sGo').disabled = false;
+    if (!res || res.error) { setStat('Не получилось: ' + ((res && res.error) || 'нет ответа')); return; }
+    if (!res.items.length) { setStat('Треков не нашлось. Плейлисты и альбомы — через «Открыть Яндекс Музыку».'); return; }
+    setStat('Найдено: ' + res.items.length + ' · клик по треку — играть');
+    for (const it of res.items) {
+      const row = document.createElement('div');
+      row.className = 'q sr';
+      if (it.cover) { const im = document.createElement('img'); im.className = 'sc'; im.src = it.cover; row.appendChild(im); }
+      const t = document.createElement('span'); t.className = 'tt'; t.textContent = it.title;
+      const a = document.createElement('span'); a.className = 'aa'; a.textContent = it.artist;
+      row.append(t, a);
+      row.addEventListener('click', async () => {
+        $('sres').querySelectorAll('.q').forEach((r) => r.classList.remove('cur'));
+        row.classList.add('cur');
+        setStat('Запускаю…');
+        const r = await window.ym.playSearch(sQuery, it.i, it.title, it.artist);
+        setStat(r && r.error ? 'Не получилось: ' + r.error : 'Играет: ' + it.title);
+      });
+      $('sres').appendChild(row);
+    }
+  }
+  $('sGo').onclick = doSearch;
+  $('sq').addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
+
   // ───────── панель ─────────
   function setPanel(open) {
     panelOpen = open;
     document.body.classList.toggle('open', open);
-    if (open) loadQueue();
+    updateLyw();
+    if (open) {
+      loadQueue();
+      if (tab === 'search') $('sq').focus();
+    }
   }
 
   // ───────── события от main ─────────
-  window.ym.onState((s) => { state = s; render(); });
+  window.ym.onState((s) => { state = s; stateAt = performance.now(); render(); tickLyrics(); });
+  window.ym.onLyrics((p) => { lyr = p || { status: 'idle' }; renderLyrics(); });
   window.ym.onPanel(setPanel);
   window.ym.onIcons((m) => { Object.assign(icons, m); render(); });
   window.ym.onHud((v) => { cfg.hudVisible = v; updateHudVisibility(); });
   window.ym.onConfig((c) => {
+    if (pendingApp) { c = { ...c }; delete c.theme; delete c.hudOpacity; } // свои несохранённые правки вида не затираем
     cfg = { ...cfg, ...c };
+    applyTheme();
+    syncStyle();
     applyHudPos();
-    document.documentElement.style.setProperty('--op', Math.min(1, Math.max(0.2, cfg.hudOpacity)));
-    $('hint').textContent = `Esc или ${cfg.hotkeyPanel} — закрыть · мини-плеер можно перетащить`;
+    updateLyw();
+    $('hint').textContent = `Esc или ${cfg.hotkeyPanel} — закрыть · мини-плеер и окно текста можно перетащить`;
     updateHudVisibility();
   });
 
@@ -367,6 +797,7 @@
     if (e.key === 'Escape') window.ym.closePanel();
   });
 
+  applyTheme();
   render();
 </script>
 </body>
