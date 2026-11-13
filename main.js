@@ -32,7 +32,19 @@ const DEFAULTS = {
     blur: true,                            // размытие фона за плашками
   },
   lyricsOffset: 0,                         // сдвиг текста в секундах (+ — строки раньше, − — позже)
+  startUrl: 'https://music.yandex.ru/collection', // что открывать в скрытом окне при запуске (на «полной» странице подгружается весь плеер)
+  playlists: [],                           // добавленные в оверлей плейлисты/альбомы/исполнители: [{ title, url, cover }]
+  discord: { enabled: true, clientId: '', button: true }, // статус «Слушает…» в профиле Discord; clientId — необязательный свой Application ID (по умолчанию берётся встроенный)
 };
+
+const { DiscordPresence, buildActivity } = require('./discord-rpc');
+
+// Встроенный Application ID Discord. Его нужно завести ОДИН раз (разработчику, не пользователю):
+// https://discord.com/developers/applications → New Application → назови «Яндекс Музыка»
+// (это название увидят друзья в «Слушает …») → скопируй Application ID и вставь сюда.
+// После этого у всех, кто запускает приложение, статус работает сам, без настройки.
+const DEFAULT_DISCORD_CLIENT_ID = '1570780746979737640';
+const discordClientId = () => cfg.discord.clientId || DEFAULT_DISCORD_CLIENT_ID;
 
 const ICON = path.join(__dirname, 'icon.png');
 const YM_URL = 'https://music.yandex.ru/';
@@ -73,6 +85,12 @@ function sanitizeTheme(t) {
   };
 }
 
+function sanitizeDiscord(d) {
+  d = d && typeof d === 'object' ? d : {};
+  const id = String(d.clientId || '').trim();
+  return { enabled: !!d.enabled, clientId: /^\d{17,20}$/.test(id) ? id : '', button: d.button !== false };
+}
+
 function saveConfig() {
   try { fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2)); } catch { /* не критично */ }
 }
@@ -91,6 +109,8 @@ function configForOverlay() {
     lyricsPinned: cfg.lyricsPinned,
     lyricsPos: cfg.lyricsPos,
     theme: cfg.theme,
+    playlists: cfg.playlists,
+    discord: { ...cfg.discord, builtinId: !!DEFAULT_DISCORD_CLIENT_ID },
   };
 }
 
@@ -104,6 +124,13 @@ function loadConfig() {
   cfg = { ...DEFAULTS, ...user };
   cfg.theme = sanitizeTheme({ ...DEFAULTS.theme, ...(user.theme || {}) });
   cfg.hudOpacity = Math.min(1, Math.max(0.2, Number(cfg.hudOpacity) || DEFAULTS.hudOpacity));
+  cfg.playlists = sanitizePins(user.playlists);
+  cfg.discord = sanitizeDiscord({ ...DEFAULTS.discord, ...(user.discord || {}) });
+  // раньше статус был выключен по умолчанию и требовал ручной настройки: если свой ID не вводили — включаем автоматически (один раз)
+  if (!user.discordAuto) {
+    if (!cfg.discord.clientId) cfg.discord.enabled = true;
+    cfg.discordAuto = true;
+  }
   try { fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2)); } catch { /* не критично */ }
 }
 
@@ -132,10 +159,23 @@ function createYandexWindow() {
   ymWin.webContents.setUserAgent(ua);
 
   ymWin.setMenuBarVisibility(false);
-  ymWin.loadURL(YM_URL);
+  ymWin.loadURL(startUrl()).catch((err) => log('Яндекс: loadURL ошибка', err.message));
 
-  ymWin.webContents.on('did-finish-load', () => log('Яндекс: страница загружена', ymWin.webContents.getURL()));
-  ymWin.webContents.on('did-fail-load', (_e, code, desc, url) => log('Яндекс: ОШИБКА загрузки', code, desc, url));
+  ymWin.webContents.on('did-finish-load', () => {
+    log('Яндекс: страница загружена', ymWin.webContents.getURL());
+    ymRetryCount = 0;
+    clearTimeout(ymRetryTimer);
+    ymRetryTimer = null;
+  });
+  ymWin.webContents.on('did-fail-load', (_e, code, desc, url, isMainFrame) => {
+    log('Яндекс: ОШИБКА загрузки', code, desc, url);
+    if (!isMainFrame || code === -3) return; // -3 — загрузку прервали сами (например, перешли на другую страницу)
+    // при старте системы интернета может ещё не быть — пробуем снова с растущей паузой, пока не получится
+    ymRetryCount++;
+    const delay = Math.min(30000, 2000 * 2 ** Math.min(ymRetryCount, 5));
+    clearTimeout(ymRetryTimer);
+    ymRetryTimer = setTimeout(() => reloadYandex('нет связи, попытка ' + ymRetryCount), delay);
+  });
 
   ymWin.on('close', (e) => {
     if (!quitting) {
@@ -146,6 +186,27 @@ function createYandexWindow() {
 
   if (firstRun) ymWin.show();
 }
+
+let ymRetryTimer = null;
+let ymRetryCount = 0;
+let notReadyTicks = 0;
+let ymAutoReloads = 0;
+
+function startUrl() {
+  const u = String(cfg.startUrl || '');
+  return /^https:\/\/music\.yandex\.(ru|com|by|kz|uz)\//.test(u) ? u : DEFAULTS.startUrl;
+}
+
+// «Перезапуск Яндекс Музыки» — заново загружаем сайт в скрытом окне (вход в аккаунт сохраняется)
+function reloadYandex(why) {
+  if (!ymWin || ymWin.isDestroyed()) return;
+  clearTimeout(ymRetryTimer);
+  ymRetryTimer = null;
+  notReadyTicks = 0;
+  log('Яндекс: перезапуск —', why);
+  ymWin.loadURL(startUrl()).catch((err) => log('Яндекс: loadURL ошибка', err.message));
+}
+ipcMain.on('reload-ym', () => reloadYandex('кнопка'));
 
 function showYandex() {
   if (!ymWin) return;
@@ -344,9 +405,16 @@ async function poll() {
       }
       delete st.dbg;
     }
+    // если плеер так и не появился (сайт загрузился криво) — перезагружаем сайт, но не больше трёх раз подряд
+    if (st.ready) { notReadyTicks = 0; ymAutoReloads = 0; } else notReadyTicks++;
+    if (notReadyTicks > 80 && ymAutoReloads < 3 && !ymWin.isVisible() && /music\.yandex\./.test(ymWin.webContents.getURL())) {
+      ymAutoReloads++;
+      reloadYandex('плеер не появился за 40 секунд (' + ymAutoReloads + ')');
+    }
     ensureIcons(st.icons);
     playerPlaying = !!st.playing;
     trackLyrics(st);
+    discordSync(st);
     const out = JSON.stringify(st);
     if (out !== lastJson) {
       lastJson = out;
@@ -671,212 +739,623 @@ function trackLyrics(st) {
   });
 }
 
-// ───────────────────── Поиск ─────────────────────
-// Ищем через поиск самого сайта (в скрытом окне, оно же продолжает играть музыку), забираем
-// найденные треки со страницы результатов, а «играть» — это клик по кнопке трека на этой странице.
-const ROWS_JS = `
-  const rowsOf = () => {
-    const inQueue = (r) => !!r.closest('[class*="PlayQueue_root"]');
-    const rows = Array.from(document.querySelectorAll('[class*="CommonTrack_root"]'))
-      .filter((r) => !inQueue(r) && !(r.parentElement && r.parentElement.closest('[class*="CommonTrack_root"]')));
-    if (rows.length) return rows;
-    // запасной вариант без привязки к названиям классов: строка трека = контейнер вокруг ссылки на трек
-    const seen = new Set();
-    const out = [];
-    for (const a of Array.from(document.querySelectorAll('a[href*="/track/"]'))) {
-      if (inQueue(a)) continue;
-      let el = a;
-      for (let i = 0; i < 7 && el.parentElement; i++) {
-        const p = el.parentElement;
-        const tracks = new Set(Array.from(p.querySelectorAll('a[href*="/track/"]')).map((x) => x.getAttribute('href')));
-        if (tracks.size > 1) break;
-        el = p;
-        if (el.querySelector('a[href*="/artist/"]') && el.querySelector('img')) break;
-      }
-      if (!seen.has(el)) { seen.add(el); out.push(el); }
+// ───────────────────── Поиск, плейлисты, запуск по ссылке ─────────────────────
+// Всё, что нужно «прочитать» с сайта (результаты поиска, список плейлистов, название по ссылке), читаем во втором,
+// скрытом и беззвучном окне: так музыка в основном окне не прерывается. А играть начинаем в основном окне:
+// открываем страницу трека/альбома/плейлиста и нажимаем на ней «слушать».
+const SITE_HOST = /^music\.yandex\.(ru|com|by|kz|uz)$/;
+
+// ссылка на страницу сайта → «чистая» (без ?utm и #), иначе пустая строка
+function cleanSiteUrl(u) {
+  try {
+    const x = new URL(String(u || '').trim());
+    if (x.protocol !== 'https:' || !SITE_HOST.test(x.hostname)) return '';
+    return x.origin + x.pathname.replace(/\/+$/, '');
+  } catch { return ''; }
+}
+
+function entityTypeOf(u) {
+  try {
+    const p = new URL(u).pathname.split('/').filter(Boolean);
+    if (p[0] === 'album' && p[2] === 'track') return 'track';
+    if (p[0] === 'album') return 'album';
+    if (p[0] === 'artist') return 'artist';
+    if (p.includes('playlists')) return 'playlist';
+    if (p[0] === 'rotor') return 'wave';
+  } catch { /* не ссылка */ }
+  return 'other';
+}
+
+function sanitizePins(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const x of list) {
+    const url = cleanSiteUrl(x && x.url);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    out.push({
+      type: entityTypeOf(url),
+      title: String((x && x.title) || url).slice(0, 120),
+      url,
+      cover: typeof (x && x.cover) === 'string' && /^https:\/\//.test(x.cover) ? x.cover.slice(0, 300) : '',
+    });
+    if (out.length >= 100) break;
+  }
+  return out;
+}
+
+// второе окно: тот же аккаунт (partition), но звук выключен и показывать его не нужно
+let sbWin = null;
+let sbTimer = null;
+let sbChain = Promise.resolve();
+function withScraper(fn) {
+  const p = sbChain.then(fn, fn);
+  sbChain = p.catch(() => {});
+  return p;
+}
+function getScraper() {
+  if (sbWin && !sbWin.isDestroyed()) return sbWin;
+  sbWin = new BrowserWindow({
+    width: 1200,
+    height: 900,
+    show: false,
+    webPreferences: {
+      partition: 'persist:ym',
+      backgroundThrottling: false,
+      autoplayPolicy: 'document-user-activation-required',
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  const ua = sbWin.webContents.getUserAgent().split(' ').filter((t) => !/^(Electron|ym-overlay|YMOverlay)\//i.test(t)).join(' ');
+  sbWin.webContents.setUserAgent(ua);
+  sbWin.webContents.setAudioMuted(true);
+  sbWin.on('closed', () => { sbWin = null; });
+  return sbWin;
+}
+function scheduleScraperClose() {
+  clearTimeout(sbTimer);
+  sbTimer = setTimeout(() => { if (sbWin && !sbWin.isDestroyed()) sbWin.destroy(); sbWin = null; }, 90000);
+}
+// открыть страницу во втором окне и выполнить на ней скрипт (он вернёт JSON-строку)
+function scrapeWith(url, js) {
+  return withScraper(async () => {
+    const win = getScraper();
+    try {
+      try { await win.loadURL(url); } catch (e) { if (!/ERR_ABORTED/.test(String(e && e.message))) throw e; }
+      return JSON.parse(await win.webContents.executeJavaScript(js, true));
+    } finally {
+      scheduleScraperClose();
     }
-    return out;
-  };
-  const sigOf = (r) => (r.textContent || '').slice(0, 40);
-  const rowInfo = (r, i) => {
-    const tEl = r.querySelector('[class*="Meta_titleContainer"]');
-    let title = tEl ? ((tEl.innerText || tEl.textContent || '').split('\\n')[0]).trim() : '';
-    const img = r.querySelector('img');
-    if (!title) { const l = r.querySelector('a[href*="/track/"]'); if (l) title = ((l.innerText || l.textContent || '').split('\\n')[0]).trim(); }
-    if (!title && img) title = (img.alt || '').replace(/^Трек\\s+/, '');
-    const arts = Array.from(r.querySelectorAll('a[href*="/artist/"]')).map((a) => a.textContent.trim()).filter(Boolean);
-    return { i, title, artist: Array.from(new Set(arts)).join(', '), cover: img ? String(img.src || '') : '' };
-  };
+  });
+}
+const netErr = (err) => (/ERR_INTERNET|ERR_NAME_NOT|ERR_NETWORK|ERR_CONNECTION|ERR_TIMED/.test(String(err && err.message)) ? 'нет интернета' : String((err && err.message) || err));
+
+// Скрипт для страницы: собирает со страницы треки, альбомы, плейлисты и исполнителей. Опирается не на названия CSS-классов,
+// а на адреса ссылок (/album/…/track/…, /album/…, /artist/…, /playlists/…), поэтому переживает смену вёрстки.
+const ENT_LIB = `
+    const SKIP = '[class*="PlayerBar"],[class*="PlayQueue"],[class*="FullscreenPlayer"],[class*="SyncLyrics"]';
+    const NL = String.fromCharCode(10);
+    const isNum = (s) => s !== undefined && s !== '' && !isNaN(Number(s));
+    const cache = new Map();
+    const classify = (href) => {
+      if (cache.has(href)) return cache.get(href);
+      let res = null;
+      try {
+        const u = new URL(href, location.href);
+        if (u.hostname.indexOf('music.yandex.') === 0) {
+          const p = u.pathname.split('/').filter(Boolean);
+          const o = u.origin;
+          if (p[0] === 'album' && isNum(p[1]) && p[2] === 'track' && isNum(p[3]) && p.length === 4) res = { type: 'track', key: 'track:' + p[3], url: o + '/album/' + p[1] + '/track/' + p[3] };
+          else if (p[0] === 'album' && isNum(p[1]) && p.length === 2) res = { type: 'album', key: 'album:' + p[1], url: o + '/album/' + p[1] };
+          else if (p[0] === 'artist' && isNum(p[1]) && p.length === 2) res = { type: 'artist', key: 'artist:' + p[1], url: o + '/artist/' + p[1] };
+          else if (p[0] === 'playlists' && p.length === 2) res = { type: 'playlist', key: 'playlist:' + p[1], url: o + '/playlists/' + p[1] };
+          else if (p[0] === 'users' && p[2] === 'playlists' && p.length === 4) res = { type: 'playlist', key: 'playlist:' + p[1] + '/' + p[3], url: o + '/users/' + p[1] + '/playlists/' + p[3] };
+        }
+      } catch (e) { /* не ссылка */ }
+      cache.set(href, res);
+      return res;
+    };
+    const firstLine = (el) => ((el.innerText || el.textContent || '').split(NL).map((s) => s.trim()).filter(Boolean)[0] || '');
+    const build = (lim) => {
+      const groups = new Map();
+      for (const a of document.querySelectorAll('a[href]')) {
+        if (a.closest(SKIP)) continue;
+        const info = classify(a.getAttribute('href'));
+        if (!info) continue;
+        if (!groups.has(info.key)) groups.set(info.key, { info, anchors: [] });
+        groups.get(info.key).anchors.push(a);
+      }
+      const claimed = [];
+      const inClaimed = (el) => claimed.some((c) => c.contains(el));
+      const out = { track: [], album: [], playlist: [], artist: [] };
+      const limit = lim || { track: 40, album: 20, playlist: 24, artist: 20 };
+      // сначала треки, потом альбомы, плейлисты, исполнители: ссылка на исполнителя внутри строки трека — это не «исполнитель» в выдаче
+      for (const type of ['track', 'album', 'playlist', 'artist']) {
+        for (const g of groups.values()) {
+          if (g.info.type !== type || out[type].length >= limit[type]) continue;
+          const anchors = g.anchors.filter((a) => !inClaimed(a));
+          if (!anchors.length) continue;
+          let el = anchors[0];
+          for (let i = 0; i < 7 && el.parentElement; i++) {
+            const par = el.parentElement;
+            let other = false;
+            const links = par.querySelectorAll('a[href]');
+            for (const a of links) {
+              const c = classify(a.getAttribute('href'));
+              if (c && c.type === type && c.key !== g.info.key) { other = true; break; }
+            }
+            if (other || links.length > 14 || par.querySelectorAll('img').length > 3) break;
+            el = par;
+          }
+          let title = '';
+          for (const a of anchors) { title = firstLine(a) || a.getAttribute('aria-label') || a.getAttribute('title') || ''; if (title) break; }
+          const img = el.querySelector('img');
+          if (!title && img) title = (img.alt || '').trim();
+          if (!title) continue;
+          let subtitle = '';
+          if (type === 'track' || type === 'album') {
+            const names = [];
+            for (const a of el.querySelectorAll('a[href]')) {
+              const c = classify(a.getAttribute('href'));
+              if (c && c.type === 'artist') { const t = firstLine(a); if (t && names.indexOf(t) < 0) names.push(t); }
+            }
+            subtitle = names.join(', ');
+          }
+          claimed.push(el);
+          out[type].push({ type, title, subtitle, url: g.info.url, cover: img ? String(img.currentSrc || img.src || '') : '' });
+        }
+      }
+      return out;
+    };
+    const count = (o) => o.track.length + o.album.length + o.playlist.length + o.artist.length;
 `;
 
-// вписываем запрос в поле поиска сайта и отправляем. Поле может появляться только на странице поиска —
-// тогда сначала кликаем по ссылке/кнопке «Поиск» (переход внутри сайта, музыка не прерывается)
-const SEARCH_SUBMIT_JS = (q) => `(async () => {
+const ENTITIES_JS = (maxMs, scrolls) => `(async () => {
   try {
-    ${ROWS_JS}
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    const findInput = () => {
-      const all = Array.from(document.querySelectorAll('input')).filter((i) => {
-        const t = (i.type || 'text').toLowerCase();
-        return t === 'text' || t === 'search';
-      });
-      const hit = all.filter((i) => /поиск|search|найти|искать/i.test([i.placeholder, i.getAttribute('aria-label'), i.getAttribute('role'), i.name].join(' ')));
-      const vis = (list) => list.find((i) => i.offsetParent !== null) || list[0];
-      return vis(hit) || (all.length === 1 ? all[0] : null);
+    if (location.hostname.indexOf('passport') >= 0) return JSON.stringify({ error: 'нужно войти в аккаунт: открой Яндекс Музыку из трея и войди' });
+    ${ENT_LIB}
+    const scrollAll = () => {
+      const els = [document.scrollingElement].concat(Array.from(document.querySelectorAll('div,main,section'))
+        .filter((e) => e.scrollHeight > e.clientHeight + 80 && /(auto|scroll)/.test(getComputedStyle(e).overflowY)).slice(0, 8));
+      els.forEach((e) => { if (e) e.scrollTop = e.scrollHeight; });
     };
-    let el = findInput();
-    let opened = '';
-    if (!el) {
-      const searchish = (e) => /поиск|search/i.test([e.getAttribute('aria-label'), e.getAttribute('title'), (e.textContent || '').slice(0, 40)].join(' '));
-      const opener = document.querySelector('a[href="/search"]')
-        || document.querySelector('a[href^="/search"]')
-        || Array.from(document.querySelectorAll('a,button,[role=button],[role=link]')).find((e) => (e.textContent || '').length < 40 && searchish(e));
-      if (opener) {
-        opened = (opener.tagName + ' ' + (opener.getAttribute('href') || opener.getAttribute('aria-label') || opener.textContent || '')).slice(0, 80);
-        opener.click();
-        for (let i = 0; i < 15 && !el; i++) { await sleep(200); el = findInput(); }
-      }
-    }
-    if (!el) return JSON.stringify({ error: 'на сайте не найдено поле поиска', opened });
-    el.focus();
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-    setter.call(el, ${JSON.stringify(q)});
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    const form = el.closest('form');
-    if (form && form.requestSubmit) form.requestSubmit();
-    ['keydown', 'keypress', 'keyup'].forEach((type) => el.dispatchEvent(new KeyboardEvent(type, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true })));
-    return JSON.stringify({ ok: true, opened, sig: rowsOf().slice(0, 5).map(sigOf).join('|') });
-  } catch (e) { return JSON.stringify({ error: String(e) }); }
-})()`;
-
-// ждём, пока сайт откроет результаты именно этого запроса, и забираем треки
-const SEARCH_WAIT_JS = (q, sig, timeoutMs) => `(async () => {
-  try {
-    ${ROWS_JS}
-    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    const norm = (s) => String(s).toLowerCase().replace(/[^\\p{L}\\p{N}]+/gu, '');
-    const want = norm(${JSON.stringify(q)});
-    const urlOk = () => { let u = location.href; try { u = decodeURIComponent(u.replace(/\\+/g, ' ')); } catch (e) { /* оставим как есть */ } return norm(u).includes(want); };
-    const oldSig = ${JSON.stringify(sig)};
     const t0 = Date.now();
-    let last = -1, stable = 0, routed = false;
-    while (Date.now() - t0 < ${timeoutMs}) {
-      await sleep(300);
-      if (!urlOk()) continue;
-      routed = true;
-      const rows = rowsOf();
-      const s = rows.slice(0, 5).map(sigOf).join('|');
-      if (rows.length && (s !== oldSig || Date.now() - t0 > 4000)) {
-        if (rows.length === last) { if (++stable >= 2) break; } else { stable = 0; last = rows.length; }
+    let last = -1, stable = 0, done = 0, out = build();
+    while (Date.now() - t0 < ${Number(maxMs)}) {
+      await sleep(400);
+      out = build();
+      const n = count(out);
+      if (n > 0 && n === last) stable++; else stable = 0;
+      last = n;
+      if (stable >= 2) {
+        if (done < ${Number(scrolls)}) { done++; scrollAll(); stable = 0; await sleep(500); continue; }
+        break;
       }
     }
-    if (!routed) return JSON.stringify({ route: false, url: location.href });
-    return JSON.stringify({ route: true, items: rowsOf().slice(0, 30).map(rowInfo), url: location.href });
+    out = build();
+    return JSON.stringify({ items: out, url: location.href, title: document.title });
   } catch (e) { return JSON.stringify({ error: String(e) }); }
 })()`;
 
-const SEARCH_PLAY_JS = (idx, title, artist) => `(() => {
+// Все треки страницы (плейлист, альбом, исполнитель). Список на сайте подгружается по мере прокрутки,
+// поэтому листаем страницу вниз и собираем треки по ходу.
+const TRACKS_JS = (maxMs) => `(async () => {
   try {
-    ${ROWS_JS}
-    const T = ${JSON.stringify(String(title))}, A = ${JSON.stringify(String(artist))};
-    const same = (r) => { const x = rowInfo(r, 0); return x.title === T && x.artist === A; };
-    const rows = rowsOf();
-    let row = rows[${Number.isInteger(idx) ? idx : -1}];
-    if (!row || !same(row)) row = rows.find(same);
-    if (!row) return JSON.stringify({ notfound: true });
+    ${ENT_LIB}
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const seen = new Map();
+    const merge = () => {
+      const o = build({ track: 5000, album: 0, playlist: 0, artist: 0 });
+      let added = 0;
+      for (const it of o.track) if (!seen.has(it.url)) { seen.set(it.url, it); added++; }
+      return added;
+    };
+    const scrollable = (e) => e.scrollHeight > e.clientHeight + 80 && /(auto|scroll)/.test(getComputedStyle(e).overflowY);
+    const pick = () => {
+      let best = null, bestH = 0;
+      const cands = [document.scrollingElement].concat(Array.from(document.querySelectorAll('div,main,section')).filter(scrollable)).filter(Boolean);
+      for (const e of cands) {
+        const h = e.scrollHeight - e.clientHeight;
+        if (h > bestH && e.querySelector('a[href*="/track/"]')) { best = e; bestH = h; }
+      }
+      return best;
+    };
+    const t0 = Date.now();
+    while (Date.now() - t0 < 9000 && !seen.size) { await sleep(400); merge(); }
+    let idle = 0;
+    while (Date.now() - t0 < ${Number(maxMs)} && idle < 4) {
+      const sc = pick();
+      if (!sc) break;
+      const before = sc.scrollTop;
+      sc.scrollTop = before + Math.max(300, sc.clientHeight * 0.8);
+      await sleep(450);
+      const added = merge();
+      const atEnd = sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 4 || sc.scrollTop === before;
+      if (added === 0) idle++; else idle = 0;
+      if (atEnd && added === 0) break;
+    }
+    const h1 = document.querySelector('h1');
+    return JSON.stringify({ items: Array.from(seen.values()).slice(0, 500), title: h1 ? (h1.innerText || '').split(NL)[0].trim() : '', url: location.href });
+  } catch (e) { return JSON.stringify({ error: String(e) }); }
+})()`;
+
+// Нажать «играть» у конкретного трека в списке на открытой странице (так очередью становится сам плейлист)
+const PLAY_IN_LIST_JS = (trackId) => `(async () => {
+  try {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const BAD = '[class*="PlayerBar"],[class*="PlayQueue"],[class*="FullscreenPlayer"]';
+    const id = ${JSON.stringify(String(trackId))};
+    const DIG = '0123456789';
+    const hasTrack = (h) => { h = h || ''; const i = h.indexOf('/track/' + id); return i >= 0 && DIG.indexOf(h.charAt(i + 7 + id.length) || 'x') < 0; };
+    const link = () => Array.from(document.querySelectorAll('a[href]')).find((a) => hasTrack(a.getAttribute('href')) && !a.closest(BAD));
+    const usesPlay = (b) => Array.from(b.querySelectorAll('use')).some((u) => {
+      const h = u.getAttribute('href') || u.getAttribute('xlink:href') || '';
+      const k = h.indexOf('#') >= 0 ? h.slice(h.indexOf('#') + 1) : '';
+      return k === 'play' || k.indexOf('play_') === 0;
+    });
+    const scrollable = (e) => e.scrollHeight > e.clientHeight + 80 && /(auto|scroll)/.test(getComputedStyle(e).overflowY);
+    const scroller = () => {
+      let best = null, bestH = 0;
+      const cands = [document.scrollingElement].concat(Array.from(document.querySelectorAll('div,main,section')).filter(scrollable)).filter(Boolean);
+      for (const e of cands) { const h = e.scrollHeight - e.clientHeight; if (h > bestH && e.querySelector('a[href*="/track/"]')) { best = e; bestH = h; } }
+      return best;
+    };
+    let a = link();
+    const t0 = Date.now();
+    while (!a && Date.now() - t0 < 4000) { await sleep(300); a = link(); }
+    if (!a) { // трек может быть ниже в списке — листаем сверху вниз
+      const sc = scroller();
+      if (sc) {
+        sc.scrollTop = 0;
+        for (let i = 0; i < 60 && !a; i++) {
+          await sleep(350);
+          a = link();
+          if (a) break;
+          const before = sc.scrollTop;
+          sc.scrollTop = before + Math.max(300, sc.clientHeight * 0.8);
+          if (sc.scrollTop === before) break;
+        }
+      }
+    }
+    if (!a) return JSON.stringify({ notfound: true });
+    let row = a;
+    for (let i = 0; i < 7 && row.parentElement; i++) {
+      const par = row.parentElement;
+      const others = Array.from(par.querySelectorAll('a[href*="/track/"]')).filter((x) => !hasTrack(x.getAttribute('href')));
+      if (others.length || par.querySelectorAll('a[href]').length > 14 || par.querySelectorAll('img').length > 3) break;
+      row = par;
+    }
+    row.scrollIntoView({ block: 'center' });
+    await sleep(300);
     const pb = row.querySelector('[class*="PlayButtonWithCover_playButton"]')
-      || Array.from(row.querySelectorAll('button,[role=button]')).find((b) => /воспроизв|слушать|играть|play/i.test((b.getAttribute('aria-label') || '') + ' ' + (b.title || '')))
-      || row.querySelector('button')
-      || row.querySelector('img');
-    if (!pb) return JSON.stringify({ error: 'у трека нет кнопки play' });
+      || Array.from(row.querySelectorAll('button,[role="button"]')).find(usesPlay)
+      || row.querySelector('button');
+    if (!pb) return JSON.stringify({ notfound: true });
     pb.click();
     return JSON.stringify({ ok: true });
   } catch (e) { return JSON.stringify({ error: String(e) }); }
 })()`;
 
-let lastSearch = '';
+// Название и обложка страницы (для добавления плейлиста по ссылке)
+const META_JS = `(async () => {
+  try {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    if (location.hostname.indexOf('passport') >= 0) return JSON.stringify({ error: 'нужно войти в аккаунт: открой Яндекс Музыку из трея и войди' });
+    const meta = (n) => { const m = document.querySelector('meta[property="' + n + '"]') || document.querySelector('meta[name="' + n + '"]'); return m ? (m.getAttribute('content') || '') : ''; };
+    const t0 = Date.now();
+    while (Date.now() - t0 < 8000 && !document.querySelector('h1') && !meta('og:title')) await sleep(300);
+    const h1 = document.querySelector('h1');
+    const NL = String.fromCharCode(10);
+    return JSON.stringify({ h1: h1 ? (h1.innerText || '').split(NL)[0].trim() : '', ogTitle: meta('og:title'), docTitle: document.title, cover: meta('og:image'), url: location.href });
+  } catch (e) { return JSON.stringify({ error: String(e) }); }
+})()`;
+
+// Список ссылок страницы — для отладки, если ничего не нашлось
+const LINKS_JS = `(() => JSON.stringify({
+  url: location.href,
+  title: document.title,
+  links: Array.from(new Set(Array.from(document.querySelectorAll('a[href]')).map((a) => a.getAttribute('href')))).slice(0, 80),
+  imgs: document.querySelectorAll('img').length,
+}))()`;
+
+// Нажать на странице «слушать» (кнопка у заголовка трека/альбома/плейлиста/исполнителя)
+const PLAY_PAGE_JS = `(async () => {
+  try {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const BAD = '[class*="PlayerBar"],[class*="PlayQueue"],[class*="FullscreenPlayer"],[class*="CommonTrack_root"],[class*="Navbar"]';
+    const usesPlay = (b) => Array.from(b.querySelectorAll('use')).some((u) => {
+      const h = u.getAttribute('href') || u.getAttribute('xlink:href') || '';
+      const id = h.indexOf('#') >= 0 ? h.slice(h.indexOf('#') + 1) : '';
+      return id === 'play' || id.indexOf('play_') === 0;
+    });
+    const label = (b) => ((b.getAttribute('aria-label') || '') + ' ' + (b.title || '') + ' ' + (b.textContent || '').slice(0, 40)).toLowerCase();
+    const textPlay = (b) => /слушать|воспроизв|играть|запустить|включить/.test(label(b));
+    const find = () => {
+      const all = Array.from(document.querySelectorAll('button,[role="button"]')).filter((b) => !b.closest(BAD) && b.offsetParent !== null && !b.disabled);
+      return all.find(usesPlay) || all.find(textPlay) || null;
+    };
+    let btn = null;
+    const t0 = Date.now();
+    while (!btn && Date.now() - t0 < 12000) { btn = find(); if (!btn) await sleep(300); }
+    if (!btn) {
+      const row = document.querySelector('[class*="CommonTrack_root"]');
+      const pb = row && (row.querySelector('[class*="PlayButtonWithCover_playButton"]') || row.querySelector('button'));
+      if (pb) { pb.click(); return JSON.stringify({ ok: true, via: 'первый трек в списке' }); }
+      return JSON.stringify({ error: 'не нашёл на странице кнопку воспроизведения' });
+    }
+    btn.click();
+    return JSON.stringify({ ok: true, via: (btn.getAttribute('aria-label') || btn.textContent || 'кнопка').trim().slice(0, 40) });
+  } catch (e) { return JSON.stringify({ error: String(e) }); }
+})()`;
+
 async function runSearch(query) {
   const q = String(query || '').trim().slice(0, 200);
-  if (!q) return { items: [] };
+  if (!q) return { items: { track: [], album: [], playlist: [], artist: [] } };
+  try {
+    const r = await scrapeWith(YM_URL + 'search?text=' + encodeURIComponent(q), ENTITIES_JS(9000, 0));
+    if (r.error) { log('Поиск:', r.error); return { error: r.error }; }
+    const n = r.items;
+    log('Поиск:', q, '→ треков', n.track.length, ', альбомов', n.album.length, ', исполнителей', n.artist.length, ', плейлистов', n.playlist.length);
+    return { items: n };
+  } catch (err) {
+    log('Поиск ошибка:', err.message);
+    return { error: netErr(err) };
+  }
+}
+
+let myPlCache = { at: 0, items: [] };
+async function runMyPlaylists(force) {
+  if (!force && myPlCache.items.length && Date.now() - myPlCache.at < 5 * 60 * 1000) return { items: myPlCache.items };
+  try {
+    for (const pth of ['collection', 'collection/playlists']) {
+      const r = await scrapeWith(YM_URL + pth, ENTITIES_JS(12000, 3));
+      if (r.error) { log('Плейлисты:', r.error); return { error: r.error }; }
+      log('Плейлисты:', pth, '→', r.items.playlist.length, 'шт.');
+      if (r.items.playlist.length) {
+        myPlCache = { at: Date.now(), items: r.items.playlist };
+        return { items: r.items.playlist };
+      }
+    }
+    return { items: [] };
+  } catch (err) {
+    log('Плейлисты ошибка:', err.message);
+    return { error: netErr(err) };
+  }
+}
+
+function cleanTitle(t) {
+  return String(t || '').replace(/\s+/g, ' ')
+    .replace(/^(Плейлист|Альбом|Исполнитель)\s*[«"](.+?)[»"].*$/i, '$2')
+    .replace(/\s*[—–-]\s*(слушать|listen).*$/i, '')
+    .replace(/\s*(на|в|on)\s+Яндекс\s*Музык\S*\s*$/i, '')
+    .trim().slice(0, 120);
+}
+function fixCover(c) {
+  let u = String(c || '').replace('%%', '400x400');
+  if (u.startsWith('//')) u = 'https:' + u;
+  return /^https:\/\//.test(u) ? u : '';
+}
+
+async function pinAdd(item) {
+  const url = cleanSiteUrl(item && item.url);
+  if (!url) return { error: 'это не ссылка на Яндекс Музыку (нужна вида music.yandex.ru/…)' };
+  const existing = cfg.playlists.find((p) => p.url === url);
+  if (existing) return { ok: true, existed: true, item: existing };
+  let title = String((item && item.title) || '').trim();
+  let cover = fixCover(item && item.cover);
+  if (!title) {
+    try {
+      const m = await scrapeWith(url, META_JS);
+      if (m.error) return { error: m.error };
+      title = cleanTitle(m.h1 || m.ogTitle || m.docTitle);
+      cover = cover || fixCover(m.cover);
+    } catch (err) {
+      return { error: 'не удалось открыть ссылку: ' + netErr(err) };
+    }
+  }
+  if (!title) title = url.replace(/^https:\/\/[^/]+/, '');
+  cfg.playlists = sanitizePins([...cfg.playlists, { url, title, cover }]);
+  saveConfig();
+  sendConfig();
+  log('Плейлисты: добавлено', title, url);
+  return { ok: true, item: cfg.playlists.find((p) => p.url === url) };
+}
+
+async function playUrl(url) {
+  const u = cleanSiteUrl(url);
+  if (!u) return { error: 'это не ссылка на Яндекс Музыку' };
   if (!ymWin || ymWin.isDestroyed()) return { error: 'окно Яндекс Музыки недоступно' };
   return withSite(async () => {
     const wc = ymWin.webContents;
-    const run = async (code) => JSON.parse(await wc.executeJavaScript(code, true));
     try {
-      const sub = await run(SEARCH_SUBMIT_JS(q));
-      if (sub.opened) log('Поиск: открыл поиск кликом по', sub.opened);
-      let sig0 = sub.sig;
-      if (sub.error) log('Поиск:', sub.error, '— пробую открыть страницу поиска напрямую');
-      const sig = q === lastSearch ? '\u0000' : sig0;
-      let res = sub.error ? { route: false } : await run(SEARCH_WAIT_JS(q, sig, 3500));
-      if (res.route === false && !sub.error) {
-        // форма не отправилась скриптом — пробуем настоящим нажатием Enter
-        wc.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
-        wc.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
-        res = await run(SEARCH_WAIT_JS(q, sig, 6000));
-      }
-      if (res.route === false) {
-        // последний вариант: открыть страницу поиска напрямую (это перезагружает сайт — текущий трек остановится)
-        log('Поиск: открываю страницу поиска напрямую');
-        await wc.loadURL(YM_URL + 'search?text=' + encodeURIComponent(q));
-        res = await run(SEARCH_WAIT_JS(q, '\u0000', 12000));
-      }
-      if (res.error) { log('Поиск:', res.error); return { error: res.error }; }
-      if (res.route === false) {
-        log('Поиск: сайт не открыл результаты, url =', res.url);
-        return { error: 'сайт не открыл результаты поиска. Открой Яндекс Музыку из трея и проверь, что ты вошёл в аккаунт' };
-      }
-      lastSearch = q;
-      log('Поиск:', q, '→ найдено', res.items.length, res.items[0] ? '(первый: ' + res.items[0].title + ')' : '');
-      return { items: res.items };
+      try { await wc.loadURL(u); } catch (e) { if (!/ERR_ABORTED/.test(String(e && e.message))) throw e; }
+      const r = JSON.parse(await wc.executeJavaScript(PLAY_PAGE_JS, true));
+      if (r.error) { log('Воспроизведение:', u, '—', r.error); return { error: r.error }; }
+      log('Воспроизведение:', u, '— нажато:', r.via);
+      return { ok: true };
     } catch (err) {
-      log('Поиск ошибка:', err.message);
-      return { error: err.message };
+      log('Воспроизведение ошибка:', err.message);
+      return { error: netErr(err) };
     }
   });
 }
 
-async function runSearchPlay(query, idx, title, artist) {
-  if (!ymWin || ymWin.isDestroyed()) return { error: 'окно Яндекс Музыки недоступно' };
-  const attempt = () => withSite(async () => JSON.parse(await ymWin.webContents.executeJavaScript(SEARCH_PLAY_JS(idx, title, artist), true)));
+const tracksCache = new Map(); // url -> { at, data }
+async function runTracks(url, force) {
+  const u = cleanSiteUrl(url);
+  if (!u) return { error: 'это не ссылка на Яндекс Музыку' };
+  const c = tracksCache.get(u);
+  if (!force && c && Date.now() - c.at < 5 * 60 * 1000) return c.data;
   try {
-    let r = await attempt();
-    if (r.notfound) { // сайт успел уйти со страницы результатов — повторяем поиск и пробуем снова
-      const s = await runSearch(query);
-      if (s.error) return s;
-      r = await attempt();
-    }
-    if (r.notfound) return { error: 'трек не найден в результатах' };
-    if (r.error) { log('Поиск (play):', r.error); return r; }
-    return { ok: true };
+    const r = await scrapeWith(u, TRACKS_JS(25000));
+    if (r.error) { log('Список треков:', r.error); return { error: r.error }; }
+    const data = { items: r.items, title: cleanTitle(r.title) };
+    log('Список треков:', u, '→', r.items.length, 'шт.');
+    if (r.items.length) tracksCache.set(u, { at: Date.now(), data });
+    return data;
   } catch (err) {
-    log('Поиск (play) ошибка:', err.message);
-    return { error: err.message };
+    log('Список треков ошибка:', err.message);
+    return { error: netErr(err) };
   }
 }
 
-// Отладка поиска: ищет тестовый запрос и пишет в лог, как выглядит страница результатов
+// Включить конкретный трек из плейлиста/альбома. Если не вышло «внутри списка» — открываем страницу самого трека.
+async function playTrackInList(listUrl, trackUrl) {
+  const lu = cleanSiteUrl(listUrl), tu = cleanSiteUrl(trackUrl);
+  const m = /\/track\/(\d+)/.exec(tu || '');
+  if (!lu || !m) return playUrl(trackUrl);
+  if (!ymWin || ymWin.isDestroyed()) return { error: 'окно Яндекс Музыки недоступно' };
+  const r = await withSite(async () => {
+    const wc = ymWin.webContents;
+    try {
+      let cur = '';
+      try { const x = new URL(wc.getURL()); cur = x.origin + x.pathname.replace(/\/+$/, ''); } catch { /* нет страницы */ }
+      if (cur !== lu) {
+        try { await wc.loadURL(lu); } catch (e) { if (!/ERR_ABORTED/.test(String(e && e.message))) throw e; }
+      }
+      return JSON.parse(await wc.executeJavaScript(PLAY_IN_LIST_JS(m[1]), true));
+    } catch (err) {
+      log('Трек из списка ошибка:', err.message);
+      return { error: netErr(err) };
+    }
+  });
+  if (r && r.ok) { log('Трек из списка: играет', tu, 'в', lu); return { ok: true }; }
+  log('Трек из списка: не нашёл строку трека (', r && (r.error || 'notfound'), '), открываю страницу трека');
+  return playUrl(tu);
+}
+
+// Отладка: что находится на странице поиска и коллекции
 async function diagnoseSearch() {
   const r = await runSearch('Imagine Dragons');
-  log('ДИАГНОСТИКА ПОИСКА:', JSON.stringify(r).slice(0, 1500));
-  try {
-    const html = await withSite(() => ymWin.webContents.executeJavaScript(`(() => {
-      ${ROWS_JS}
-      const r = rowsOf()[0];
-      if (r) return r.outerHTML.slice(0, 3000);
-      const uniq = (a) => Array.from(new Set(a)).slice(0, 40);
-      return 'строк нет; url: ' + location.href
-        + '; поля ввода: ' + JSON.stringify(Array.from(document.querySelectorAll('input')).map((i) => ({ t: i.type, p: i.placeholder, a: i.getAttribute('aria-label') })))
-        + '; ссылки: ' + JSON.stringify(uniq(Array.from(document.querySelectorAll('a[href]')).map((a) => a.getAttribute('href'))))
-        + '; кнопки: ' + JSON.stringify(uniq(Array.from(document.querySelectorAll('button,[role=button]')).map((b) => (b.getAttribute('aria-label') || b.title || b.textContent || '').trim().slice(0, 30)).filter(Boolean)))
-        + '; ширина окна: ' + window.innerWidth;
-    })()`, true));
-    log('ДИАГНОСТИКА ПОИСКА (первая строка):', html);
-  } catch (err) {
-    log('ДИАГНОСТИКА ПОИСКА ошибка:', err.message);
+  let brief = r;
+  if (r.items) {
+    brief = {};
+    for (const [k, v] of Object.entries(r.items)) brief[k] = v.length + ': ' + v.slice(0, 3).map((x) => x.title + ' — ' + x.subtitle + ' | ' + x.url).join(' ; ');
   }
+  log('ДИАГНОСТИКА ПОИСКА:', JSON.stringify(brief).slice(0, 3000));
+  try {
+    const l = await scrapeWith(YM_URL + 'search?text=' + encodeURIComponent('Imagine Dragons'), LINKS_JS);
+    log('ДИАГНОСТИКА ПОИСКА (ссылки страницы):', JSON.stringify(l).slice(0, 4000));
+  } catch (err) { log('ДИАГНОСТИКА ПОИСКА ошибка:', err.message); }
   shell.openPath(logFile);
 }
+async function diagnosePlaylists() {
+  const r = await runMyPlaylists(true);
+  log('ДИАГНОСТИКА ПЛЕЙЛИСТОВ:', JSON.stringify(r.error ? r : r.items.slice(0, 8).map((x) => x.title + ' | ' + x.url)).slice(0, 3000));
+  try {
+    const l = await scrapeWith(YM_URL + 'collection', LINKS_JS);
+    log('ДИАГНОСТИКА ПЛЕЙЛИСТОВ (ссылки страницы):', JSON.stringify(l).slice(0, 4000));
+  } catch (err) { log('ДИАГНОСТИКА ПЛЕЙЛИСТОВ ошибка:', err.message); }
+  shell.openPath(logFile);
+}
+
+// ───────────────────── Discord: «Слушает…» в профиле ─────────────────────
+const presence = new DiscordPresence();
+let discordStatus = { state: 'off', text: '' };
+let dcKey = '';
+let dcStart = 0;
+let dcActive = false;
+
+function setDiscordStatus(st) {
+  discordStatus = st;
+  log('Discord: состояние', st.state, st.text || '');
+  if (overlay && !overlay.isDestroyed()) overlay.webContents.send('discord', st);
+}
+presence.on('status', setDiscordStatus);
+presence.on('error-frame', (d) => log('Discord: ошибка', JSON.stringify(d)));
+presence.on('frame', (d) => log('Discord ←', JSON.stringify(d).slice(0, 500)));
+// Если Discord отверг статус (чаще всего из-за кнопки или картинки) — пробуем упростить: сначала без кнопки, потом ещё и без обложки
+let dcLevel = 0;
+let dcLastSt = null;
+presence.on('activity-error', (d) => {
+  log('Discord: статус отклонён (уровень ' + dcLevel + '):', JSON.stringify(d));
+  if (dcLevel < 2 && dcLastSt) {
+    dcLevel++;
+    dcActive = false;
+    dcKey = '';
+    discordSync(dcLastSt);
+  }
+});
+
+function applyDiscord() {
+  const d = cfg.discord;
+  dcKey = '';
+  dcActive = false;
+  dcLevel = 0;
+  if (d.enabled && discordClientId()) presence.start(discordClientId());
+  else {
+    presence.stop(true);
+    setDiscordStatus({ state: d.enabled ? 'noid' : 'off', text: '' });
+  }
+}
+
+// вызывается из poll(): обновляет статус только когда что-то реально изменилось (трек, пауза, перемотка)
+// Отладка: по очереди показывает 4 варианта статуса (каждый подписан номером), чтобы понять, какой из них Discord отображает
+let dcTesting = false;
+function discordTest() {
+  if (!cfg.discord.enabled || !discordClientId()) { log('Discord-тест: статус выключен или нет Application ID'); return; }
+  if (dcTesting) return;
+  dcTesting = true;
+  const cover = dcLastSt && /^https:\/\//.test(String(dcLastSt.cover || '')) ? dcLastSt.cover : '';
+  const now = Date.now();
+  const variants = [
+    { details: 'Тест 1: просто текст', state: 'без типа и картинок', instance: false },
+    { type: 2, details: 'Тест 2: Listening', state: 'без картинок и кнопок', timestamps: { start: now }, instance: false },
+    { type: 2, details: 'Тест 3: с обложкой', state: cover ? 'обложка трека' : 'обложки нет (запусти трек)', timestamps: { start: now }, assets: cover ? { large_image: cover } : {}, instance: false },
+    { type: 2, details: 'Тест 4: с кнопкой', state: 'кнопка «Найти»', timestamps: { start: now }, buttons: [{ label: 'Найти в Яндекс Музыке', url: 'https://music.yandex.ru/' }], instance: false },
+  ];
+  let i = 0;
+  const step = () => {
+    if (i >= variants.length) {
+      dcTesting = false; dcActive = false; dcKey = '';
+      presence.setActivity(null);
+      log('Discord-тест: закончен');
+      if (dcLastSt) discordSync(dcLastSt);
+      return;
+    }
+    log('Discord-тест: вариант ' + (i + 1));
+    presence.setActivity(variants[i++]);
+    setTimeout(step, 15000);
+  };
+  step();
+}
+
+function discordSync(st) {
+  if (dcTesting) return;
+  const d = cfg.discord;
+  if (!d.enabled || !discordClientId()) return;
+  dcLastSt = st;
+  const a = buildActivity(st, d);
+  if (a && dcLevel >= 1) delete a.buttons;
+  if (a && dcLevel >= 2) delete a.assets.large_image;
+  if (!a) {
+    if (dcActive) { dcActive = false; dcKey = ''; presence.setActivity(null); }
+    return;
+  }
+  const key = [a.details, a.state, a.timestamps.end ? a.timestamps.end - a.timestamps.start : 0, a.assets.large_image, d.button].join('|');
+  if (!dcActive || key !== dcKey || Math.abs(a.timestamps.start - dcStart) > 2500) {
+    dcKey = key;
+    dcStart = a.timestamps.start;
+    dcActive = true;
+    log('Discord →', JSON.stringify(a).slice(0, 500));
+    presence.setActivity(a);
+  }
+}
+
+ipcMain.on('discord-set', (_e, d) => {
+  if (!d || typeof d !== 'object') return;
+  cfg.discord = sanitizeDiscord({ ...cfg.discord, ...d });
+  saveConfig();
+  sendConfig();
+  buildTrayMenu();
+  applyDiscord();
+});
+ipcMain.on('open-external', (_e, url) => {
+  if (url === 'https://discord.com/developers/applications') shell.openExternal(url);
+});
 
 // ───────────────────── Команды плееру ─────────────────────
 const num = (v, d = 0) => (Number.isFinite(Number(v)) ? Number(v) : d);
@@ -926,8 +1405,22 @@ ipcMain.handle('cmd', async (_e, name, arg) => {
 ipcMain.handle('queue', () => runQueue(-1));
 
 ipcMain.handle('search', (_e, q) => runSearch(q));
-ipcMain.handle('search-play', async (_e, q, idx, title, artist) => {
-  const res = await runSearchPlay(String(q || ''), Math.floor(num(idx, -1)), String(title || ''), String(artist || ''));
+ipcMain.handle('my-playlists', (_e, force) => runMyPlaylists(!!force));
+ipcMain.handle('pin-add', (_e, item) => pinAdd(item));
+ipcMain.handle('pin-remove', (_e, url) => {
+  cfg.playlists = cfg.playlists.filter((p) => p.url !== String(url || ''));
+  saveConfig();
+  sendConfig();
+  return { ok: true };
+});
+ipcMain.handle('tracks', (_e, url, force) => runTracks(url, !!force));
+ipcMain.handle('play-track', async (_e, listUrl, trackUrl) => {
+  const res = await playTrackInList(listUrl, trackUrl);
+  poll();
+  return res;
+});
+ipcMain.handle('play-url', async (_e, url) => {
+  const res = await playUrl(url);
   poll();
   return res;
 });
@@ -1009,7 +1502,7 @@ function createOverlay() {
     },
   });
   overlay.setAlwaysOnTop(true, 'screen-saver');
-  overlay.setIgnoreMouseEvents(true, { forward: true });
+  overlay.setIgnoreMouseEvents(true); // без forward: пока панель закрыта, мышь полностью проходит сквозь оверлей (наведение тоже)
   overlay.loadFile(path.join(__dirname, 'overlay.html'));
 
   overlay.webContents.on('did-finish-load', () => {
@@ -1019,6 +1512,7 @@ function createOverlay() {
     for (const [k, v] of Object.entries(iconCache)) if (v) known[k] = v;
     if (Object.keys(known).length) overlay.webContents.send('icons', known);
     overlay.webContents.send('lyrics', lyricsPayload);
+    overlay.webContents.send('discord', discordStatus);
     overlay.showInactive();
     lastJson = ''; // отправить состояние заново, если оно ушло до загрузки оверлея
     poll();
@@ -1048,7 +1542,7 @@ function setPanel(open) {
   } else {
     overlay.blur();
     overlay.setFocusable(false);
-    overlay.setIgnoreMouseEvents(true, { forward: true });
+    overlay.setIgnoreMouseEvents(true); // без forward: пока панель закрыта, мышь полностью проходит сквозь оверлей (наведение тоже)
   }
   overlay.webContents.send('panel', open);
 }
@@ -1069,6 +1563,11 @@ function buildTrayMenu() {
     { label: `Текст песни закреплён поверх окон (${cfg.hotkeyLyrics})`, type: 'checkbox', checked: !!(cfg.lyricsVisible && cfg.lyricsPinned), click: (i) => setLyricsPinned(i.checked) },
     { label: 'Вернуть окно текста на место', click: resetLyricsPos },
     { label: 'Открыть Яндекс Музыку (вход, поиск)', click: showYandex },
+    { label: 'Перезапустить Яндекс Музыку', click: () => reloadYandex('меню трея') },
+    { label: 'Показывать трек в профиле Discord', type: 'checkbox', checked: !!cfg.discord.enabled, click: (i) => {
+      cfg.discord = sanitizeDiscord({ ...cfg.discord, enabled: i.checked });
+      saveConfig(); sendConfig(); applyDiscord();
+    } },
     { type: 'separator' },
     {
       label: 'Запускать вместе с Windows',
@@ -1085,6 +1584,8 @@ function buildTrayMenu() {
     { label: 'Отладка: собрать данные о плеере (запусти трек!)', click: diagnose },
     { label: 'Отладка: данные об очереди (запусти трек из плейлиста!)', click: diagnoseQueue },
     { label: 'Отладка: данные о поиске (тестовый запрос)', click: diagnoseSearch },
+    { label: 'Отладка: данные о плейлистах', click: diagnosePlaylists },
+    { label: 'Отладка: тестовый статус Discord (4 варианта по 15 сек)', click: discordTest },
     { label: 'Отладка: открыть лог', click: () => shell.openPath(logFile) },
     { type: 'separator' },
     { label: 'Выход', click: () => { quitting = true; app.quit(); } },
@@ -1111,6 +1612,7 @@ if (!app.requestSingleInstanceLock()) {
     createYandexWindow();
     createOverlay();
     createTray();
+    applyDiscord();
 
     const okPanel = globalShortcut.register(cfg.hotkeyPanel, () => setPanel(!panelOpen));
     const okHud = globalShortcut.register(cfg.hotkeyHud, () => setHud(!cfg.hudVisible));
@@ -1122,7 +1624,7 @@ if (!app.requestSingleInstanceLock()) {
     setInterval(poll, 500);
   });
 
-  app.on('before-quit', () => { quitting = true; });
+  app.on('before-quit', () => { quitting = true; presence.stop(true); });
   app.on('will-quit', () => globalShortcut.unregisterAll());
   app.on('window-all-closed', () => { /* живём в трее */ });
 }

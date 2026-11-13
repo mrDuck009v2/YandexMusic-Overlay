@@ -18,6 +18,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "discord-rpc.js",
       "overlay.html",
       "icon.png",
       "package.json"

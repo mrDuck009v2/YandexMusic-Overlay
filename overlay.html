@@ -12,6 +12,10 @@
   html, body { margin: 0; height: 100%; overflow: hidden; background: transparent;
     font-family: "Segoe UI", system-ui, sans-serif; color: rgb(var(--fg)); user-select: none; }
 
+  /* пока панель закрыта, оверлей не реагирует на мышь вообще: без наведений, курсоров и уголка для ресайза */
+  body:not(.open), body:not(.open) * { pointer-events: none !important; cursor: default !important; }
+  body:not(.open) #lyw { resize: none; }
+
   /* ───────── Мини-плеер (HUD) ───────── */
   #hud { position: fixed; width: 330px; padding: 10px; display: flex; gap: 12px; align-items: center;
     background: rgba(var(--bg), var(--op)); border-radius: var(--rad); backdrop-filter: var(--blurf);
@@ -75,8 +79,8 @@
   #tabs .tab { font-size: 12px; font-weight: 600; padding: 6px 14px; color: rgba(var(--fg),.7); }
   .pane { display: none; margin-top: 8px; height: 230px; overflow-y: auto; border-radius: 10px; background: rgba(var(--fg),.04); }
   .pane.show { display: block; }
-  .pane::-webkit-scrollbar, #sres::-webkit-scrollbar { width: 8px; }
-  .pane::-webkit-scrollbar-thumb, #sres::-webkit-scrollbar-thumb { background: rgba(var(--fg),.2); border-radius: 4px; }
+  .pane::-webkit-scrollbar, #sres::-webkit-scrollbar, #pres::-webkit-scrollbar { width: 8px; }
+  .pane::-webkit-scrollbar-thumb, #sres::-webkit-scrollbar-thumb, #pres::-webkit-scrollbar-thumb { background: rgba(var(--fg),.2); border-radius: 4px; }
 
   /* текст песни */
   #lyw { position: fixed; right: 20px; bottom: 20px; width: 380px; height: 340px; min-width: 240px; min-height: 150px;
@@ -104,15 +108,45 @@
   .lsrc { padding: 8px 0 2px; font-size: 11px; color: rgba(var(--fg),.3); }
 
   /* поиск */
-  #searchPane.show { display: flex; flex-direction: column; }
+  #searchPane.show, #plistPane.show { display: flex; flex-direction: column; }
   .srow { display: flex; gap: 8px; padding: 8px; }
-  #sq { flex: 1; min-width: 0; font: inherit; font-size: 13px; color: rgb(var(--fg)); background: rgba(var(--fg),.1); border: none; outline: none;
+  #sq, #pu { flex: 1; min-width: 0; font: inherit; font-size: 13px; color: rgb(var(--fg)); background: rgba(var(--fg),.1); border: none; outline: none;
     border-radius: 8px; padding: 8px 12px; user-select: text; }
-  #sq:focus { box-shadow: inset 0 0 0 1.5px var(--accent); }
-  #sGo { font-size: 13px; padding: 8px 14px; }
-  #sGo:disabled { opacity: .5; cursor: default; }
-  #sstat { padding: 0 12px 6px; font-size: 12px; color: rgba(var(--fg),.45); min-height: 18px; }
-  #sres { flex: 1; overflow-y: auto; }
+  #sq:focus, #pu:focus { box-shadow: inset 0 0 0 1.5px var(--accent); }
+  #sGo, #pAdd { font-size: 13px; padding: 8px 14px; }
+  #sGo:disabled, #pAdd:disabled { opacity: .5; cursor: default; }
+  #sstat, #pstat { padding: 0 12px 6px; font-size: 12px; color: rgba(var(--fg),.45); min-height: 18px; }
+  #sres, #pres { flex: 1; overflow-y: auto; }
+  #scats { display: flex; gap: 6px; padding: 0 12px 6px; flex-wrap: wrap; }
+  #scats .cat { font-size: 12px; padding: 3px 10px; }
+  .shead { display: flex; align-items: center; padding: 8px 12px 3px; font-size: 11px; font-weight: 700; letter-spacing: .04em;
+    text-transform: uppercase; color: rgba(var(--fg),.45); }
+  .shead button { margin-left: auto; font-size: 11px; padding: 2px 8px; text-transform: none; letter-spacing: 0; }
+  .q .ab { flex: none; align-self: center; padding: 2px 8px; font-size: 12px; min-width: 0; }
+  .q .ty { flex: none; font-size: 11px; color: rgba(var(--fg),.35); }
+  .fbtn { display: flex; gap: 8px; }
+  .hx.wide { width: 170px; }
+  .st .dcs { flex: 1; font-size: 12px; color: rgba(var(--fg),.55); }
+
+  /* список треков плейлиста — слева от панели */
+  #tracks { position: fixed; left: 10px; top: 10px; width: 340px; height: 500px; display: none; flex-direction: column; padding: 14px 6px 8px;
+    background: rgba(var(--bgp), var(--pop)); border-radius: calc(var(--rad) + 4px); box-shadow: 0 20px 60px rgba(0,0,0,.6); overflow: hidden; }
+  #tracks.show { display: flex; }
+  .tkHead { display: flex; align-items: center; gap: 10px; padding: 0 8px 8px 8px; }
+  .tkHead img { width: 44px; height: 44px; border-radius: 8px; object-fit: cover; background: #333; flex: none; }
+  .tkHead img[src=""], .tkHead img:not([src]) { display: none; }
+  .tkTitle { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .tkTitle b { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tkTitle span { font-size: 12px; color: rgba(var(--fg),.5); }
+  .tkBar { display: flex; gap: 8px; padding: 0 8px 6px; }
+  #tkFilter { flex: 1; min-width: 0; font: inherit; font-size: 12px; color: rgb(var(--fg)); background: rgba(var(--fg),.1); border: none; outline: none;
+    border-radius: 8px; padding: 6px 10px; user-select: text; }
+  #tkFilter:focus { box-shadow: inset 0 0 0 1.5px var(--accent); }
+  #tkPlay { font-size: 12px; padding: 6px 12px; white-space: nowrap; }
+  #tkStat { padding: 0 12px 4px; font-size: 12px; color: rgba(var(--fg),.45); min-height: 16px; }
+  #tkList { flex: 1; min-height: 0; overflow-y: auto; }
+  #tkList::-webkit-scrollbar { width: 8px; }
+  #tkList::-webkit-scrollbar-thumb { background: rgba(255,255,255,.2); border-radius: 4px; }
   .q .sc { width: 28px; height: 28px; border-radius: 5px; background: #333; flex: none; align-self: center; object-fit: cover; }
   .q.sr { align-items: center; }
   .q { display: flex; gap: 10px; padding: 7px 12px; font-size: 13px; cursor: pointer; align-items: baseline; }
@@ -165,6 +199,19 @@
 </div>
 
 <div id="backdrop">
+  <div id="tracks">
+    <div class="tkHead">
+      <img id="tkCover" alt="">
+      <div class="tkTitle"><b id="tkName"></b><span id="tkInfo"></span></div>
+      <button id="tkClose" title="Закрыть список">✕</button>
+    </div>
+    <div class="tkBar">
+      <button id="tkPlay" title="Включить плейлист с первого трека">▶ Играть с начала</button>
+      <input id="tkFilter" type="text" placeholder="Фильтр по названию…" autocomplete="off" spellcheck="false">
+    </div>
+    <div id="tkStat"></div>
+    <div id="tkList"></div>
+  </div>
   <div id="panel">
     <div class="top">
       <div class="cover" id="pCover"></div>
@@ -196,23 +243,36 @@
     <div id="tabs">
       <button class="tab active" data-tab="queue">Очередь</button>
       <button class="tab" id="bLyShow" title="Показать/скрыть плавающий текст песни">Текст</button>
+      <button class="tab" data-tab="plist">Плейлисты</button>
       <button class="tab" data-tab="search">Поиск</button>
-      <button class="tab" data-tab="style">Вид</button>
+      <button class="tab" data-tab="style">Настройки</button>
     </div>
     <div id="queue" class="pane show"></div>
     <div id="stylePane" class="pane"></div>
+    <div id="plistPane" class="pane">
+      <div class="srow">
+        <input id="pu" type="text" placeholder="Ссылка на плейлист, альбом или исполнителя…" autocomplete="off" spellcheck="false">
+        <button id="pAdd">Добавить</button>
+      </div>
+      <div id="pstat"></div>
+      <div id="pres"></div>
+    </div>
     <div id="searchPane" class="pane">
       <div class="srow">
-        <input id="sq" type="text" placeholder="Трек или исполнитель…" autocomplete="off" spellcheck="false">
+        <input id="sq" type="text" placeholder="Трек, исполнитель, альбом, плейлист…" autocomplete="off" spellcheck="false">
         <button id="sGo">Найти</button>
       </div>
       <div id="sstat"></div>
+      <div id="scats"></div>
       <div id="sres"></div>
     </div>
 
     <div class="foot">
       <span id="hint">Esc — закрыть</span>
-      <button id="bOpen">Открыть Яндекс Музыку (поиск, плейлисты)</button>
+      <span class="fbtn">
+        <button id="bReload" title="Заново загрузить сайт в скрытом окне — если нет интернета при старте или что-то не подгрузилось">↻ Перезапустить Я.Музыку</button>
+        <button id="bOpen">Открыть Яндекс Музыку</button>
+      </span>
     </div>
   </div>
 </div>
@@ -224,7 +284,7 @@
   let state = { ready: false };
   let stateAt = performance.now(); // когда пришло последнее состояние — для плавной подсветки строк
   const icons = {}; // href -> { vb, html } — иконки из спрайта самого сайта
-  let cfg = { hudCorner: 'top-right', hudOpacity: 0.7, hudVisible: true, hudFlash: true, hotkeyPanel: '', hudPos: null, hudLyrics: true, lyricsOffset: 0, lyricsVisible: true, lyricsPinned: false, lyricsPos: null };
+  let cfg = { hudCorner: 'top-right', hudOpacity: 0.7, hudVisible: true, hudFlash: true, hotkeyPanel: '', hudPos: null, playlists: [], discord: { enabled: false, clientId: '', button: true }, hudLyrics: true, lyricsOffset: 0, lyricsVisible: true, lyricsPinned: false, lyricsPos: null };
   let panelOpen = false, seeking = false, volDragging = false;
   let flashTimer = null, flashing = false, lastTrackKey = '';
 
@@ -433,6 +493,8 @@
     document.querySelectorAll('#tabs .tab[data-tab]').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
     $('queue').classList.toggle('show', name === 'queue');
     $('searchPane').classList.toggle('show', name === 'search');
+    $('plistPane').classList.toggle('show', name === 'plist');
+    if (name === 'plist') { renderPlaylists(); if (myPl === null && !plBusy) loadMyPlaylists(false); }
     $('stylePane').classList.toggle('show', name === 'style');
     if (name === 'queue') markCurrentInQueue(true);
     if (name === 'search') $('sq').focus();
@@ -628,6 +690,8 @@
     r.setProperty('--blurf', t.blur === false ? 'none' : 'blur(14px)');
   }
 
+  let dcState = null, dcShow = () => {};
+  window.ym.onDiscord((st) => { dcState = st; dcShow(); });
   let pendingApp = null, appTimer = null;
   function setLook(key, val) {
     if (key === 'hudOpacity') cfg.hudOpacity = val;
@@ -698,6 +762,45 @@
     range('Размер текста песни', 'lyricsFontSize', 12, 32, 1, (v) => v + 'px');
     range('Скругление углов', 'radius', 0, 28, 1, (v) => v + 'px');
     check('Размытие фона за плашками', 'blur');
+    // Discord
+    const dhead = document.createElement('div'); dhead.className = 'shead'; dhead.textContent = 'Discord'; box.appendChild(dhead);
+    const dc = () => cfg.discord || {};
+    const dcRow = row('Показывать трек в профиле');
+    const dcOn = document.createElement('input'); dcOn.type = 'checkbox';
+    dcOn.addEventListener('change', () => window.ym.discordSet({ enabled: dcOn.checked }));
+    dcRow.appendChild(dcOn);
+    const idRow = row('Свой Application ID (необязательно)');
+    const idIn = document.createElement('input'); idIn.type = 'text'; idIn.className = 'hx wide'; idIn.maxLength = 20; idIn.spellcheck = false; idIn.placeholder = 'не нужен';
+    idIn.addEventListener('input', () => {
+      const v = idIn.value.replace(/[^0-9]/g, '');
+      if (v !== idIn.value) idIn.value = v;
+      if (v.length >= 17 || v === '') window.ym.discordSet({ clientId: v });
+    });
+    const idHelp = document.createElement('button'); idHelp.textContent = 'Где взять?'; idHelp.className = 'rst';
+    idHelp.title = 'Откроет страницу Discord для разработчиков: New Application → название (его увидят в «Слушает …») → Application ID';
+    idHelp.onclick = () => window.ym.openExternal('https://discord.com/developers/applications');
+    idRow.append(idIn, idHelp);
+    const btnRow = row('Кнопка «Найти в Яндекс Музыке»');
+    const btnIn = document.createElement('input'); btnIn.type = 'checkbox';
+    btnIn.addEventListener('change', () => window.ym.discordSet({ button: btnIn.checked }));
+    btnRow.appendChild(btnIn);
+    const stRow = row('Состояние');
+    const dcs = document.createElement('span'); dcs.className = 'dcs'; stRow.appendChild(dcs);
+    const DC_TEXT = {
+      off: 'выключено', noid: 'не задан Application ID — впиши его в поле ниже (или в DEFAULT_DISCORD_CLIENT_ID в main.js)', connecting: 'подключаюсь к Discord…',
+      nodiscord: 'Discord не запущен — подключусь, как только запустишь', error: 'ошибка',
+    };
+    const showDc = () => {
+      const st = dcState || { state: 'off' };
+      dcs.textContent = st.state === 'connected' ? 'подключено' + (st.text ? ' как ' + st.text : '') + ' — статус виден в профиле' : (st.text && st.state === 'error' ? st.text : DC_TEXT[st.state] || st.state);
+    };
+    dcShow = showDc;
+    syncers.push(() => {
+      dcOn.checked = !!dc().enabled;
+      btnIn.checked = dc().button !== false;
+      if (document.activeElement !== idIn) idIn.value = dc().clientId || '';
+      showDc();
+    });
     const rr = row('');
     const rb = document.createElement('button'); rb.className = 'rst'; rb.textContent = 'Сбросить вид';
     rb.onclick = () => { pendingApp = null; clearTimeout(appTimer); window.ym.setAppearance({ reset: true }); };
@@ -705,40 +808,221 @@
     syncStyle();
   })();
 
+  // ───────── общие строки: трек / альбом / исполнитель / плейлист ─────────
+  const TYPE_RU = { track: 'Трек', album: 'Альбом', artist: 'Исполнитель', playlist: 'Плейлист', wave: 'Волна', other: 'Ссылка' };
+  const isPinned = (url) => (cfg.playlists || []).some((p) => p.url === url);
+
+  // opts: pin — кнопка «＋ добавить в оверлей», remove — кнопка «✕ убрать»; setStat — куда писать статус
+  function entityRow(it, opts, setStat) {
+    const row = document.createElement('div');
+    row.className = 'q sr';
+    if (it.cover) { const im = document.createElement('img'); im.className = 'sc'; im.src = it.cover; row.appendChild(im); }
+    const t = document.createElement('span'); t.className = 'tt'; t.textContent = it.title;
+    const a = document.createElement('span'); a.className = 'aa'; a.textContent = it.subtitle || '';
+    row.append(t, a);
+    if (!it.subtitle && it.type && it.type !== 'track') { const ty = document.createElement('span'); ty.className = 'ty'; ty.textContent = TYPE_RU[it.type] || ''; row.appendChild(ty); }
+    const play = async () => {
+      document.querySelectorAll('#sres .q, #pres .q').forEach((r) => r.classList.remove('cur'));
+      row.classList.add('cur');
+      setStat('Запускаю… (страница загружается, это пара секунд)');
+      const r = await window.ym.playUrl(it.url);
+      setStat(r && r.error ? 'Не получилось: ' + r.error : 'Играет: ' + it.title);
+    };
+    // альбом, исполнитель и плейлист: клик открывает слева список треков, ▶ — включает сразу
+    const browsable = it.type === 'album' || it.type === 'artist' || it.type === 'playlist';
+    if (browsable) {
+      const pb = document.createElement('button'); pb.className = 'ab'; pb.textContent = '▶'; pb.title = 'Играть с начала';
+      pb.onclick = (e) => { e.stopPropagation(); play(); };
+      row.appendChild(pb);
+    }
+    if (opts.pin && it.type !== 'track') {
+      const b = document.createElement('button'); b.className = 'ab';
+      const mark = () => { const on = isPinned(it.url); b.textContent = on ? '✓' : '＋'; b.title = on ? 'Уже в оверлее' : 'Добавить в «Плейлисты» оверлея'; b.disabled = on; };
+      mark();
+      b.onclick = async (e) => {
+        e.stopPropagation();
+        b.disabled = true;
+        const r = await window.ym.pinAdd({ url: it.url, title: it.title, cover: it.cover });
+        setStat(r && r.error ? 'Не получилось: ' + r.error : 'Добавлено во вкладку «Плейлисты»: ' + it.title);
+        mark();
+        if (r && r.ok && browsable) openTracks(r.item || it);
+      };
+      row.appendChild(b);
+    }
+    if (opts.remove) {
+      const b = document.createElement('button'); b.className = 'ab'; b.textContent = '✕'; b.title = 'Убрать из оверлея';
+      b.onclick = (e) => { e.stopPropagation(); window.ym.pinRemove(it.url); };
+      row.appendChild(b);
+    }
+    row.addEventListener('click', () => (browsable ? openTracks(it) : play()));
+    return row;
+  }
+  const emptyMsg = (box, text) => { const d = document.createElement('div'); d.className = 'lmsg'; d.textContent = text; box.appendChild(d); };
+
+  // ───────── список треков слева от панели ─────────
+  let tk = { item: null, items: null };
+  const tkSame = (t) => {
+    const n = (v) => String(v || '').toLowerCase();
+    const first = n(t.subtitle).split(',')[0].trim();
+    return n(t.title) === n(state.title) && (!first || n(state.artist).includes(first));
+  };
+  function layoutTracks() {
+    const r = $('panel').getBoundingClientRect(), t = $('tracks');
+    const w = Math.min(340, Math.max(220, r.left - 24));
+    t.style.width = w + 'px';
+    t.style.height = Math.round(r.height) + 'px';
+    t.style.top = Math.round(r.top) + 'px';
+    t.style.left = Math.max(10, Math.round(r.left - w - 14)) + 'px';
+  }
+  window.addEventListener('resize', layoutTracks);
+  function markNowPlaying() {
+    if (!tk.items) return;
+    const rows = $('tkList').children;
+    for (let i = 0; i < rows.length; i++) {
+      const t = rows[i]._t;
+      if (t) rows[i].classList.toggle('cur', !!state.ready && !state.empty && tkSame(t));
+    }
+  }
+  function renderTracks() {
+    const box = $('tkList');
+    box.textContent = '';
+    if (!tk.items) return;
+    const f = $('tkFilter').value.trim().toLowerCase();
+    let shown = 0;
+    tk.items.forEach((t, i) => {
+      if (f && !(t.title + ' ' + t.subtitle).toLowerCase().includes(f)) return;
+      shown++;
+      const row = document.createElement('div');
+      row.className = 'q sr';
+      row._t = t;
+      const n = document.createElement('span'); n.className = 'n'; n.textContent = i + 1;
+      const tt = document.createElement('span'); tt.className = 'tt'; tt.textContent = t.title;
+      const aa = document.createElement('span'); aa.className = 'aa'; aa.textContent = t.subtitle || '';
+      row.append(n, tt, aa);
+      row.addEventListener('click', async () => {
+        $('tkStat').textContent = 'Запускаю… (' + t.title + ')';
+        const r = await window.ym.playTrack(tk.item.url, t.url);
+        $('tkStat').textContent = r && r.error ? 'Не получилось: ' + r.error : 'Играет: ' + t.title;
+      });
+      box.appendChild(row);
+    });
+    if (!shown) emptyMsg(box, f ? 'По фильтру ничего нет' : 'Треки не нашлись');
+    markNowPlaying();
+  }
+  async function openTracks(it) {
+    tk = { item: it, items: null };
+    $('tracks').classList.add('show');
+    layoutTracks();
+    $('tkName').textContent = it.title;
+    $('tkInfo').textContent = (TYPE_RU[it.type] || '') + ' · загружаю треки…';
+    $('tkCover').src = it.cover || '';
+    $('tkFilter').value = '';
+    $('tkStat').textContent = '';
+    $('tkList').textContent = '';
+    emptyMsg($('tkList'), 'Читаю список с сайта… (у длинных плейлистов это до 20 секунд)');
+    let r;
+    try { r = await window.ym.tracks(it.url); } catch (e) { r = { error: String((e && e.message) || e) }; }
+    if (!tk.item || tk.item.url !== it.url) return; // тем временем открыли другой список
+    if (!r || r.error) { $('tkInfo').textContent = TYPE_RU[it.type] || ''; $('tkList').textContent = ''; emptyMsg($('tkList'), 'Не получилось: ' + ((r && r.error) || 'нет ответа')); return; }
+    tk.items = r.items || [];
+    if (r.title && it.title === it.url) $('tkName').textContent = r.title;
+    $('tkInfo').textContent = (TYPE_RU[it.type] || '') + ' · ' + tk.items.length + ' треков';
+    renderTracks();
+  }
+  $('tkClose').onclick = () => { tk = { item: null, items: null }; $('tracks').classList.remove('show'); };
+  $('tkPlay').onclick = async () => {
+    if (!tk.item) return;
+    $('tkStat').textContent = 'Запускаю…';
+    const r = await window.ym.playUrl(tk.item.url);
+    $('tkStat').textContent = r && r.error ? 'Не получилось: ' + r.error : 'Играет: ' + tk.item.title;
+  };
+  $('tkFilter').addEventListener('input', renderTracks);
+
+  // ───────── плейлисты ─────────
+  let myPl = null, plBusy = false; // myPl: null — ещё не грузили, иначе { items } или { error }
+  const setPStat = (t) => { $('pstat').textContent = t || ''; };
+  function renderPlaylists() {
+    const box = $('pres');
+    box.textContent = '';
+    const head = (title, btn) => {
+      const h = document.createElement('div'); h.className = 'shead'; h.textContent = title;
+      if (btn) h.appendChild(btn);
+      box.appendChild(h);
+    };
+    head('Добавленные');
+    const pins = cfg.playlists || [];
+    if (!pins.length) emptyMsg(box, 'Пока пусто. Вставь ссылку выше или нажми ＋ у результата поиска или у своего плейлиста.');
+    pins.forEach((it) => box.appendChild(entityRow(it, { remove: true }, setPStat)));
+    const rb = document.createElement('button'); rb.textContent = '↻ Обновить'; rb.disabled = plBusy;
+    rb.onclick = () => loadMyPlaylists(true);
+    head('Мои плейлисты (из коллекции)', rb);
+    if (myPl === null || plBusy) emptyMsg(box, 'Читаю список с сайта…');
+    else if (myPl.error) emptyMsg(box, 'Не получилось: ' + myPl.error);
+    else if (!myPl.items.length) emptyMsg(box, 'Плейлисты в коллекции не нашлись. Добавь нужные по ссылке.');
+    else myPl.items.forEach((it) => box.appendChild(entityRow(it, { pin: true }, setPStat)));
+  }
+  async function loadMyPlaylists(force) {
+    if (plBusy) return;
+    plBusy = true;
+    renderPlaylists();
+    try { myPl = await window.ym.myPlaylists(force); } catch (e) { myPl = { error: String((e && e.message) || e) }; }
+    plBusy = false;
+    renderPlaylists();
+  }
+  async function addByUrl() {
+    const u = $('pu').value.trim();
+    if (!u) return;
+    $('pAdd').disabled = true;
+    setPStat('Читаю ссылку…');
+    const r = await window.ym.pinAdd({ url: u });
+    $('pAdd').disabled = false;
+    if (r && r.error) { setPStat('Не получилось: ' + r.error); return; }
+    $('pu').value = '';
+    setPStat(r && r.existed ? 'Эта ссылка уже добавлена' : 'Добавлено');
+    if (r && r.item && ['album', 'artist', 'playlist'].includes(r.item.type)) openTracks(r.item);
+  }
+  $('pAdd').onclick = addByUrl;
+  $('pu').addEventListener('keydown', (e) => { if (e.key === 'Enter') addByUrl(); });
+
   // ───────── поиск ─────────
-  let sBusy = false, sQuery = '';
+  const CATS = [['track', 'Треки'], ['artist', 'Исполнители'], ['album', 'Альбомы'], ['playlist', 'Плейлисты']];
+  let sBusy = false, sData = null, sCat = 'track';
   const setStat = (t) => { $('sstat').textContent = t || ''; };
+  function renderSearch() {
+    const bar = $('scats'), box = $('sres');
+    bar.textContent = '';
+    box.textContent = '';
+    if (!sData) return;
+    for (const [key, label] of CATS) {
+      const b = document.createElement('button');
+      b.className = 'tab cat' + (key === sCat ? ' active' : '');
+      b.textContent = label + ' ' + (sData[key] || []).length;
+      b.onclick = () => { sCat = key; renderSearch(); };
+      bar.appendChild(b);
+    }
+    const items = sData[sCat] || [];
+    if (!items.length) emptyMsg(box, 'В этой категории ничего не нашлось');
+    items.forEach((it) => box.appendChild(entityRow(it, { pin: true }, setStat)));
+  }
   async function doSearch() {
     const q = $('sq').value.trim();
     if (!q || sBusy) return;
     sBusy = true;
-    sQuery = q;
     $('sGo').disabled = true;
-    $('sres').textContent = '';
+    sData = null;
+    renderSearch();
     setStat('Ищем…');
     let res;
     try { res = await window.ym.search(q); } catch (e) { res = { error: String((e && e.message) || e) }; }
     sBusy = false;
     $('sGo').disabled = false;
     if (!res || res.error) { setStat('Не получилось: ' + ((res && res.error) || 'нет ответа')); return; }
-    if (!res.items.length) { setStat('Треков не нашлось. Плейлисты и альбомы — через «Открыть Яндекс Музыку».'); return; }
-    setStat('Найдено: ' + res.items.length + ' · клик по треку — играть');
-    for (const it of res.items) {
-      const row = document.createElement('div');
-      row.className = 'q sr';
-      if (it.cover) { const im = document.createElement('img'); im.className = 'sc'; im.src = it.cover; row.appendChild(im); }
-      const t = document.createElement('span'); t.className = 'tt'; t.textContent = it.title;
-      const a = document.createElement('span'); a.className = 'aa'; a.textContent = it.artist;
-      row.append(t, a);
-      row.addEventListener('click', async () => {
-        $('sres').querySelectorAll('.q').forEach((r) => r.classList.remove('cur'));
-        row.classList.add('cur');
-        setStat('Запускаю…');
-        const r = await window.ym.playSearch(sQuery, it.i, it.title, it.artist);
-        setStat(r && r.error ? 'Не получилось: ' + r.error : 'Играет: ' + it.title);
-      });
-      $('sres').appendChild(row);
-    }
+    sData = res.items;
+    const total = CATS.reduce((n, [k]) => n + (sData[k] || []).length, 0);
+    if (!total) { setStat('Ничего не нашлось'); return; }
+    sCat = (CATS.find(([k]) => (sData[k] || []).length) || CATS[0])[0];
+    setStat('Клик — играть · ＋ — добавить альбом/плейлист/исполнителя в оверлей');
+    renderSearch();
   }
   $('sGo').onclick = doSearch;
   $('sq').addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
@@ -748,6 +1032,7 @@
     panelOpen = open;
     document.body.classList.toggle('open', open);
     updateLyw();
+    if (open && tk.item) layoutTracks();
     if (open) {
       loadQueue();
       if (tab === 'search') $('sq').focus();
@@ -755,7 +1040,7 @@
   }
 
   // ───────── события от main ─────────
-  window.ym.onState((s) => { state = s; stateAt = performance.now(); render(); tickLyrics(); });
+  window.ym.onState((s) => { state = s; stateAt = performance.now(); render(); tickLyrics(); markNowPlaying(); });
   window.ym.onLyrics((p) => { lyr = p || { status: 'idle' }; renderLyrics(); });
   window.ym.onPanel(setPanel);
   window.ym.onIcons((m) => { Object.assign(icons, m); render(); });
@@ -765,6 +1050,7 @@
     cfg = { ...cfg, ...c };
     applyTheme();
     syncStyle();
+    if (tab === 'plist') renderPlaylists();
     applyHudPos();
     updateLyw();
     $('hint').textContent = `Esc или ${cfg.hotkeyPanel} — закрыть · мини-плеер и окно текста можно перетащить`;
@@ -779,6 +1065,12 @@
   $('bShuffle').onclick = () => window.ym.cmd('shuffle');
   $('bRepeat').onclick = () => window.ym.cmd('repeat');
   $('bOpen').onclick = () => window.ym.openYandex();
+  $('bReload').onclick = () => {
+    window.ym.reloadYm();
+    $('bReload').textContent = '↻ Перезапускаю…';
+    $('bReload').disabled = true;
+    setTimeout(() => { $('bReload').textContent = '↻ Перезапустить Я.Музыку'; $('bReload').disabled = false; }, 4000);
+  };
 
   const seekEl = $('seek');
   seekEl.addEventListener('pointerdown', () => { seeking = true; });
