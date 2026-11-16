@@ -34,7 +34,7 @@ const DEFAULTS = {
   lyricsOffset: 0,                         // сдвиг текста в секундах (+ — строки раньше, − — позже)
   startUrl: 'https://music.yandex.ru/collection', // что открывать в скрытом окне при запуске (на «полной» странице подгружается весь плеер)
   playlists: [],                           // добавленные в оверлей плейлисты/альбомы/исполнители: [{ title, url, cover }]
-  discord: { enabled: true, clientId: '', button: true }, // статус «Слушает…» в профиле Discord; clientId — необязательный свой Application ID (по умолчанию берётся встроенный)
+  discord: { enabled: true, clientId: '', button: true, button2: '', showPaused: false, lyrics: false, lyricsLead: 0, lyricsLines: 3 }, // статус «Слушает…» в профиле Discord; clientId — необязательный свой Application ID (по умолчанию берётся встроенный)
 };
 
 const { DiscordPresence, buildActivity } = require('./discord-rpc');
@@ -88,7 +88,7 @@ function sanitizeTheme(t) {
 function sanitizeDiscord(d) {
   d = d && typeof d === 'object' ? d : {};
   const id = String(d.clientId || '').trim();
-  return { enabled: !!d.enabled, clientId: /^\d{17,20}$/.test(id) ? id : '', button: d.button !== false };
+  return { enabled: !!d.enabled, clientId: /^\d{17,20}$/.test(id) ? id : '', button: d.button !== false, button2: ['genius', 'youtube'].includes(d.button2) ? d.button2 : '', showPaused: !!d.showPaused, lyrics: !!d.lyrics, lyricsLead: Math.max(-3, Math.min(3, Number(d.lyricsLead) || 0)), lyricsLines: Math.max(1, Math.min(4, Math.round(Number(d.lyricsLines)) || 3)) };
 }
 
 function saveConfig() {
@@ -674,9 +674,9 @@ async function fetchLyrics(t) {
     return null;
   };
 
-  const pick = (list) => {
-    if (!Array.isArray(list)) return null;
-    let best = null, bestScore = -1;
+  const rank = (list) => {
+    if (!Array.isArray(list)) return [];
+    const scored = [];
     for (const x of list) {
       if (!x || (!x.instrumental && !x.syncedLyrics && !x.plainLyrics)) continue;
       const xt = normName(x.trackName);
@@ -689,26 +689,45 @@ async function fetchLyrics(t) {
         const d = Math.abs(x.duration - dur);
         sc += d <= 2 ? 4 : d <= 6 ? 2 : -2;
       }
-      if (sc > bestScore) { best = x; bestScore = sc; }
+      scored.push({ x, sc });
     }
-    return best;
+    scored.sort((a, b) => b.sc - a.sc);
+    return scored.slice(0, 8).map((e) => e.x);
+  };
+
+  // Синхронный текст важнее обычного: обычный (или «инструментал») запоминаем лишь как запасной вариант
+  // и возвращаем, только если синхронный не нашёлся нигде — иначе первая же запись без таймкодов отрезала бы все остальные.
+  let fallback = null;
+  const consider = (x) => {
+    const p = toPayload(x);
+    if (!p) return null;
+    if (p.synced) return p;
+    if (!fallback) fallback = p;
+    return null;
   };
 
   // 1) точное совпадение по названию, исполнителю и длительности
   if (first && dur) {
-    const exact = await lrclibGet('/get' + qs({ track_name: title, artist_name: first, duration: dur }));
-    const p = toPayload(exact);
+    let exact = null;
+    try { exact = await lrclibGet('/get' + qs({ track_name: title, artist_name: first, duration: dur })); } catch (e) { log('LRCLIB /get:', e.message); }
+    const p = consider(exact);
     if (p) return p;
   }
   // 2) поиск по названию и исполнителю, 3) общий поиск
   const tries = [];
   if (first) tries.push('/search' + qs({ track_name: title, artist_name: first }));
   tries.push('/search' + qs({ q: (first + ' ' + title).trim() }));
+  let lastErr = null;
   for (const path of tries) {
-    const best = pick(await lrclibGet(path));
-    const p = toPayload(best);
-    if (p) return p;
+    let list = null;
+    try { list = await lrclibGet(path); } catch (e) { lastErr = e; log('LRCLIB поиск:', e.message); continue; }
+    for (const x of rank(list)) {
+      const p = consider(x);
+      if (p) return p;
+    }
   }
+  if (fallback) return fallback;
+  if (lastErr) throw lastErr;
   return { status: 'none' };
 }
 
@@ -729,9 +748,12 @@ function trackLyrics(st) {
   if (cached) { sendLyrics({ key, ...cached }); return; }
   sendLyrics({ key, status: 'loading' });
   fetchLyrics(st).then((p) => {
-    if (lyricsCache.size > 100) lyricsCache.delete(lyricsCache.keys().next().value);
-    lyricsCache.set(key, p);
-    log('Текст песни:', key, '→', p.status, p.synced ? 'синхронный, строк ' + p.synced.length : '');
+    // в кэш кладём только синхронный текст: обычный при следующем включении трека поищем заново (вдруг синхронный уже появился/сеть была кривой)
+    if (p.synced) {
+      if (lyricsCache.size > 100) lyricsCache.delete(lyricsCache.keys().next().value);
+      lyricsCache.set(key, p);
+    }
+    log('Текст песни:', key, '→', p.status, p.synced ? 'синхронный, строк ' + p.synced.length : p.plain ? 'только обычный (синхронного не нашлось)' : '');
     if (seq === lyricsSeq) sendLyrics({ key, ...p });
   }).catch((err) => {
     log('Текст песни ошибка:', key, err.message);
@@ -946,6 +968,7 @@ const TRACKS_JS = (maxMs) => `(async () => {
   try {
     ${ENT_LIB}
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const LIMIT = 1500;
     const seen = new Map();
     const merge = () => {
       const o = build({ track: 5000, album: 0, playlist: 0, artist: 0 });
@@ -953,32 +976,66 @@ const TRACKS_JS = (maxMs) => `(async () => {
       for (const it of o.track) if (!seen.has(it.url)) { seen.set(it.url, it); added++; }
       return added;
     };
-    const scrollable = (e) => e.scrollHeight > e.clientHeight + 80 && /(auto|scroll)/.test(getComputedStyle(e).overflowY);
-    const pick = () => {
-      let best = null, bestH = 0;
-      const cands = [document.scrollingElement].concat(Array.from(document.querySelectorAll('div,main,section')).filter(scrollable)).filter(Boolean);
-      for (const e of cands) {
-        const h = e.scrollHeight - e.clientHeight;
-        if (h > bestH && e.querySelector('a[href*="/track/"]')) { best = e; bestH = h; }
+    const trackLinks = () => Array.from(document.querySelectorAll('a[href*="/track/"]')).filter((a) => !a.closest(SKIP));
+    // ближайший прокручиваемый родитель трека — именно он листается на сайте (не гадаем по размеру)
+    const scrollerOf = (el) => {
+      for (let e = el.parentElement; e; e = e.parentElement) {
+        if (e.scrollHeight > e.clientHeight + 10 && /(auto|scroll)/.test(getComputedStyle(e).overflowY)) return e;
       }
-      return best;
+      return document.scrollingElement;
     };
     const t0 = Date.now();
-    while (Date.now() - t0 < 9000 && !seen.size) { await sleep(400); merge(); }
-    let idle = 0;
-    while (Date.now() - t0 < ${Number(maxMs)} && idle < 4) {
-      const sc = pick();
-      if (!sc) break;
-      const before = sc.scrollTop;
-      sc.scrollTop = before + Math.max(300, sc.clientHeight * 0.8);
-      await sleep(450);
-      const added = merge();
-      const atEnd = sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 4 || sc.scrollTop === before;
-      if (added === 0) idle++; else idle = 0;
-      if (atEnd && added === 0) break;
+    while (Date.now() - t0 < 12000 && !seen.size) { await sleep(400); merge(); }
+    // сколько треков заявлено в шапке («123 трека») — только чтобы в конце списка ждать подгрузку дольше, останавливаться по нему не будем
+    let expected = 0;
+    if (location.pathname.indexOf('/playlists/') >= 0 || location.pathname.indexOf('/album/') >= 0) {
+      const re = new RegExp('([0-9][0-9 ' + String.fromCharCode(160) + ']{0,7}) *(трек|песн)', 'i');
+      let el = document.querySelector('h1');
+      for (let i = 0; el && i < 6; i++, el = el.parentElement) {
+        const m = re.exec(el.innerText || '');
+        if (m) { expected = Number(m[1].split(String.fromCharCode(160)).join('').split(' ').join('')) || 0; break; }
+      }
+      if (expected > LIMIT * 4) expected = 0;
     }
+    let lastAdd = Date.now(), steps = 0, scInfo = '', maxH = 0;
+    while (Date.now() - t0 < ${Number(maxMs)} && seen.size < LIMIT) {
+      const links = trackLinks();
+      const last = links[links.length - 1];
+      const sc = last ? scrollerOf(last) : document.scrollingElement;
+      if (sc) {
+        maxH = Math.max(maxH, sc.scrollHeight);
+        if (!scInfo) scInfo = (sc.tagName || '') + '.' + String(sc.className || '').slice(0, 40) + ' h=' + sc.scrollHeight + '/' + sc.clientHeight;
+      }
+      steps++;
+      const before = sc ? sc.scrollTop : 0;
+      if (sc) { sc.scrollTop = before + Math.max(300, Math.round(sc.clientHeight * 0.7)); sc.dispatchEvent(new Event('scroll')); }
+      await sleep(350);
+      let added = merge();
+      const atEnd = !sc || sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 4 || sc.scrollTop === before;
+      if (atEnd && last) { // дошли до низа — «переходим» на последний трек: так сайт и подгружает продолжение списка
+        last.scrollIntoView({ block: 'end' });
+        await sleep(500);
+        added += merge();
+      }
+      if (added) lastAdd = Date.now();
+      const quiet = Date.now() - lastAdd;
+      if (!added && atEnd && quiet > (expected > seen.size ? 10000 : 4000)) break;
+      if (!added && !atEnd && quiet > 8000) break;
+      if (!added && atEnd) await sleep(500);
+    }
+    merge();
     const h1 = document.querySelector('h1');
-    return JSON.stringify({ items: Array.from(seen.values()).slice(0, 500), title: h1 ? (h1.innerText || '').split(NL)[0].trim() : '', url: location.href });
+    return JSON.stringify({ items: Array.from(seen.values()).slice(0, LIMIT), expected, diag: { steps, scroller: scInfo, maxH, ms: Date.now() - t0 }, title: h1 ? (h1.innerText || '').split(NL)[0].trim() : '', url: location.href });
+  } catch (e) { return JSON.stringify({ error: String(e) }); }
+})()`;
+
+// Только прочитать треки, которые сейчас есть на странице (листаем при этом из основного процесса настоящими событиями колеса/клавиш)
+const TRACKS_COLLECT_JS = `(() => {
+  try {
+    ${ENT_LIB}
+    const o = build({ track: 5000, album: 0, playlist: 0, artist: 0 });
+    const h1 = document.querySelector('h1');
+    return JSON.stringify({ items: o.track, title: h1 ? (h1.innerText || '').split(NL)[0].trim() : '' });
   } catch (e) { return JSON.stringify({ error: String(e) }); }
 })()`;
 
@@ -1183,18 +1240,76 @@ async function playUrl(url) {
   });
 }
 
-const tracksCache = new Map(); // url -> { at, data }
+// Запасной способ: если обычная прокрутка «из страницы» не подгрузила список (сайт ждёт настоящих событий колеса/клавиш),
+// листаем окно сайта событиями ввода, как руками, и по ходу собираем треки.
+function scrapeTracksByInput(u, maxMs) {
+  return withScraper(async () => {
+    const win = getScraper();
+    try {
+      try { await win.loadURL(u); } catch (e) { if (!/ERR_ABORTED/.test(String(e && e.message))) throw e; }
+      const wc = win.webContents;
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      const seen = new Map();
+      let title = '', idle = 0, tick = 0;
+      const t0 = Date.now();
+      try { wc.focus(); } catch { /* окно скрыто — ок */ }
+      while (Date.now() - t0 < maxMs && idle < 16 && seen.size < 1500) {
+        const r = JSON.parse(await wc.executeJavaScript(TRACKS_COLLECT_JS, true));
+        if (r.error) return { error: r.error };
+        if (r.title) title = r.title;
+        let added = 0;
+        for (const it of r.items) if (!seen.has(it.url)) { seen.set(it.url, it); added++; }
+        idle = added ? 0 : idle + 1;
+        tick++;
+        try {
+          wc.sendInputEvent({ type: 'mouseMove', x: 600, y: 450 });
+          wc.sendInputEvent({ type: 'mouseWheel', x: 600, y: 450, deltaX: 0, deltaY: -700, canScroll: true });
+          if (tick % 3 === 0) { // заодно клавиша «страница вниз» — на случай, если колесо игнорируется
+            wc.sendInputEvent({ type: 'keyDown', keyCode: 'PageDown' });
+            wc.sendInputEvent({ type: 'keyUp', keyCode: 'PageDown' });
+          }
+        } catch { /* нет такого события — идём дальше */ }
+        await sleep(added ? 350 : 600);
+      }
+      return { items: Array.from(seen.values()), title };
+    } finally {
+      scheduleScraperClose();
+    }
+  });
+}
+
+const tracksCache = new Map(); // url -> { at, data } (только полные списки)
 async function runTracks(url, force) {
   const u = cleanSiteUrl(url);
   if (!u) return { error: 'это не ссылка на Яндекс Музыку' };
   const c = tracksCache.get(u);
   if (!force && c && Date.now() - c.at < 5 * 60 * 1000) return c.data;
   try {
-    const r = await scrapeWith(u, TRACKS_JS(25000));
-    if (r.error) { log('Список треков:', r.error); return { error: r.error }; }
-    const data = { items: r.items, title: cleanTitle(r.title) };
-    log('Список треков:', u, '→', r.items.length, 'шт.');
-    if (r.items.length) tracksCache.set(u, { at: Date.now(), data });
+    let best = null;
+    // страница иногда грузится криво или подгрузка отстаёт: если прочитали не всё (или ничего) — читаем ещё раз, берём лучший результат
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const r = await scrapeWith(u, TRACKS_JS(attempt === 1 ? 50000 : 40000));
+      if (r.error) { log('Список треков:', r.error); if (!best) return { error: r.error }; break; }
+      const n = r.items.length;
+      log('Список треков:', u, '→', n, 'шт.', r.expected ? '(на странице заявлено ' + r.expected + ')' : '', 'попытка', attempt, r.diag ? JSON.stringify(r.diag) : '');
+      const grew = !best || n > best.items.length;
+      if (grew) best = r;
+      const complete = n > 0 && (!r.expected || n >= r.expected * 0.97);
+      if (complete || (!grew && attempt > 1)) break;
+    }
+    // подозрительно мало (сайт мог ждать «настоящей» прокрутки) — пробуем листать событиями ввода
+    if (best.items.length <= 20 && (!best.expected || best.items.length < best.expected * 0.97)) {
+      try {
+        const r2 = await scrapeTracksByInput(u, 40000);
+        log('Список треков (колесо мыши):', u, '→', r2.error ? 'ошибка ' + r2.error : r2.items.length + ' шт.');
+        if (!r2.error && r2.items.length > best.items.length) best = { ...best, items: r2.items, title: best.title || r2.title };
+      } catch (e) { log('Список треков (колесо) ошибка:', e.message); }
+    }
+    const n = best.items.length;
+    const expected = best.expected || 0;
+    const partial = n === 0 || (expected > 0 && n < expected * 0.97);
+    const data = { items: best.items, title: cleanTitle(best.title), expected, partial };
+    if (n && !partial) tracksCache.set(u, { at: Date.now(), data });
     return data;
   } catch (err) {
     log('Список треков ошибка:', err.message);
@@ -1323,25 +1438,99 @@ function discordTest() {
   step();
 }
 
+// Текущая строка песни для статуса: { has, line, next, pos, nextAt } — has: у трека есть синхронный текст.
+// Discord показывает обновление с задержкой (отправка + ответ + отрисовка), поэтому строку берём чуть «из будущего».
+// Опережение = измеренное время ответа Discord + запас на отрисовку + ручная подстройка discord.lyricsLead (сек) в config.json.
+const DC_DISPLAY_LAG = 0.7; // секунд
+function dcLead() {
+  const rtt = presence.rtt ? presence.rtt / 1000 : 0.25;
+  return Math.min(3, Math.max(0.2, rtt + DC_DISPLAY_LAG + (Number(cfg.discord.lyricsLead) || 0)));
+}
+// Строки песни собираем в «страницы» по несколько штук (до discord.lyricsLines, пока влезают в лимит Discord — 128 символов).
+// Статус меняется только при смене страницы, а не каждой строки: обновлений в разы меньше, строки не пропускаются.
+const DC_PAGE_CHARS = 120;
+let dcPagesCache = { src: null, n: 0, pages: [] };
+function dcPages(synced, n) {
+  if (dcPagesCache.src === synced && dcPagesCache.n === n) return dcPagesCache.pages;
+  const lines = synced
+    .map((l) => ({ t: Number(l.t) || 0, text: String((l && l.text) || '').replace(/\s+/g, ' ').trim() }))
+    .filter((l) => l.text);
+  const pages = [];
+  for (let i = 0; i < lines.length;) {
+    let text = lines[i].text, j = i + 1;
+    while (j < lines.length && j - i < n && (text + ' / ' + lines[j].text).length <= DC_PAGE_CHARS) { text += ' / ' + lines[j].text; j++; }
+    pages.push({ t: lines[i].t, text });
+    i = j;
+  }
+  dcPagesCache = { src: synced, n, pages };
+  return pages;
+}
+function discordLyricLine(st) {
+  const p = lyricsPayload;
+  if (!st || !p || p.key !== st.title + '|' + st.artist || p.status !== 'ok' || !Array.isArray(p.synced) || !p.synced.length) return { has: false, line: '', next: '', pos: 0, nextAt: null };
+  const pages = dcPages(p.synced, Math.max(1, Math.min(4, Number(cfg.discord.lyricsLines) || 3)));
+  if (!pages.length) return { has: false, line: '', next: '', pos: 0, nextAt: null };
+  const pos = (Number(st.position) || 0) + (Number(cfg.lyricsOffset) || 0) + dcLead();
+  let idx = -1, lo = 0, hi = pages.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (pages[mid].t <= pos + 0.05) { idx = mid; lo = mid + 1; } else hi = mid - 1;
+  }
+  const nx = pages[idx + 1];
+  return { has: true, line: idx >= 0 ? pages[idx].text : '', next: nx ? nx.text : '', pos, nextAt: nx ? nx.t : null };
+}
+
+// Точный таймер на смену строки: не ждём очередного опроса плеера (раз в 0,5 с), а отправляем ровно в момент смены
+let dcTimer = null;
+function dcScheduleNext(st, ly) {
+  clearTimeout(dcTimer);
+  dcTimer = null;
+  if (!st || !st.playing || !ly.has || ly.nextAt == null) return;
+  const delay = ly.nextAt - ly.pos - 0.05; // секунд до смены строки
+  if (delay > 30) return;
+  const atMs = Date.now();
+  dcTimer = setTimeout(() => {
+    dcTimer = null;
+    discordSync({ ...st, position: (Number(st.position) || 0) + (Date.now() - atMs) / 1000 });
+  }, Math.max(0, Math.round(delay * 1000)) + 15);
+}
+
+let dcTrackKey = '';
+let dcBaseKey = '';
 function discordSync(st) {
   if (dcTesting) return;
+  clearTimeout(dcTimer);
+  dcTimer = null;
   const d = cfg.discord;
   if (!d.enabled || !discordClientId()) return;
   dcLastSt = st;
-  const a = buildActivity(st, d);
+  presence.minGap = 1000;
+  // новый трек — снова пробуем статус целиком (кнопки и обложку), а не остаёмся на упрощённом после одной давней ошибки
+  const trackKey = st ? st.title + '|' + st.artist : '';
+  if (trackKey !== dcTrackKey) { dcTrackKey = trackKey; if (dcLevel > 0) { dcLevel = 0; dcActive = false; dcKey = ''; } }
+  const ly = d.lyrics ? discordLyricLine(st) : { has: false, line: '', next: '', pos: 0, nextAt: null };
+  if (d.lyrics) dcScheduleNext(st, ly);
+  const paused = !!d.showPaused && !!st && !st.playing;
+  const a = buildActivity(st, { ...d, lyrics: ly.has, line: ly.line, next: ly.next, paused });
   if (a && dcLevel >= 1) delete a.buttons;
   if (a && dcLevel >= 2) delete a.assets.large_image;
   if (!a) {
-    if (dcActive) { dcActive = false; dcKey = ''; presence.setActivity(null); }
+    if (dcActive) { dcActive = false; dcKey = ''; dcBaseKey = ''; presence.setActivity(null); }
     return;
   }
-  const key = [a.details, a.state, a.timestamps.end ? a.timestamps.end - a.timestamps.start : 0, a.assets.large_image, d.button].join('|');
-  if (!dcActive || key !== dcKey || Math.abs(a.timestamps.start - dcStart) > 2500) {
+  const ts = a.timestamps || null;
+  const key = [a.details, a.state, ts && ts.end ? ts.end - ts.start : 0, a.assets.large_image, a.assets.large_text, d.button, d.button2].join('|');
+  // «база» — всё, кроме строки песни и подписи: если изменилась только она, обновление «мягкое» (не занимает последний слот лимита)
+  const baseKey = [a.details, ts && ts.end ? ts.end - ts.start : 0, !!ts, a.assets.large_image, d.button, d.button2, ly.has, paused].join('|');
+  const startMoved = ts && Math.abs(ts.start - dcStart) > 2500;
+  if (!dcActive || key !== dcKey || startMoved) {
+    const soft = dcActive && baseKey === dcBaseKey && !startMoved;
     dcKey = key;
-    dcStart = a.timestamps.start;
+    dcBaseKey = baseKey;
+    if (ts) dcStart = ts.start;
     dcActive = true;
-    log('Discord →', JSON.stringify(a).slice(0, 500));
-    presence.setActivity(a);
+    log('Discord →', JSON.stringify(a).slice(0, 500), soft ? '(мягкое)' : '');
+    presence.setActivity(a, soft);
   }
 }
 
@@ -1608,7 +1797,7 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(() => {
     loadConfig();
-    log('Запуск. Electron', process.versions.electron);
+    log('Запуск. Electron', process.versions.electron, '· сборка: треки v3, текст v2, дискорд-строка');
     createYandexWindow();
     createOverlay();
     createTray();

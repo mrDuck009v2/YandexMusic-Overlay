@@ -143,6 +143,9 @@
     border-radius: 8px; padding: 6px 10px; user-select: text; }
   #tkFilter:focus { box-shadow: inset 0 0 0 1.5px var(--accent); }
   #tkPlay { font-size: 12px; padding: 6px 12px; white-space: nowrap; }
+  #tkReload { font-size: 13px; padding: 6px 10px; }
+  .dcsel { font: inherit; font-size: 12px; color: rgb(var(--fg)); background: rgba(var(--fg),.1); border: none; outline: none; border-radius: 6px; padding: 4px 8px; }
+  .dcsel option { color: #111; }
   #tkStat { padding: 0 12px 4px; font-size: 12px; color: rgba(var(--fg),.45); min-height: 16px; }
   #tkList { flex: 1; min-height: 0; overflow-y: auto; }
   #tkList::-webkit-scrollbar { width: 8px; }
@@ -207,6 +210,7 @@
     </div>
     <div class="tkBar">
       <button id="tkPlay" title="Включить плейлист с первого трека">▶ Играть с начала</button>
+      <button id="tkReload" title="Прочитать список заново (если треков не хватает)">↻</button>
       <input id="tkFilter" type="text" placeholder="Фильтр по названию…" autocomplete="off" spellcheck="false">
     </div>
     <div id="tkStat"></div>
@@ -784,6 +788,21 @@
     const btnIn = document.createElement('input'); btnIn.type = 'checkbox';
     btnIn.addEventListener('change', () => window.ym.discordSet({ button: btnIn.checked }));
     btnRow.appendChild(btnIn);
+    const lyRow = row('Текущая строка песни в статусе');
+    lyRow.title = 'В статусе будет «название — исполнитель», а под ним строка песни в такт музыке (нужен синхронный текст)';
+    const lyIn = document.createElement('input'); lyIn.type = 'checkbox';
+    lyIn.addEventListener('change', () => window.ym.discordSet({ lyrics: lyIn.checked }));
+    lyRow.appendChild(lyIn);
+    const b2Row = row('Вторая кнопка');
+    const b2In = document.createElement('select'); b2In.className = 'dcsel';
+    [['', 'нет'], ['genius', 'Текст на Genius'], ['youtube', 'Найти на YouTube']].forEach(([v, t]) => { const o = document.createElement('option'); o.value = v; o.textContent = t; b2In.appendChild(o); });
+    b2In.addEventListener('change', () => window.ym.discordSet({ button2: b2In.value }));
+    b2Row.appendChild(b2In);
+    const pzRow = row('Показывать паузу в статусе');
+    pzRow.title = 'На паузе вместо исчезновения статуса будет «⏸ На паузе» (без полосы времени)';
+    const pzIn = document.createElement('input'); pzIn.type = 'checkbox';
+    pzIn.addEventListener('change', () => window.ym.discordSet({ showPaused: pzIn.checked }));
+    pzRow.appendChild(pzIn);
     const stRow = row('Состояние');
     const dcs = document.createElement('span'); dcs.className = 'dcs'; stRow.appendChild(dcs);
     const DC_TEXT = {
@@ -798,6 +817,9 @@
     syncers.push(() => {
       dcOn.checked = !!dc().enabled;
       btnIn.checked = dc().button !== false;
+      lyIn.checked = !!dc().lyrics;
+      b2In.value = dc().button2 || '';
+      pzIn.checked = !!dc().showPaused;
       if (document.activeElement !== idIn) idIn.value = dc().clientId || '';
       showDc();
     });
@@ -909,7 +931,7 @@
     if (!shown) emptyMsg(box, f ? 'По фильтру ничего нет' : 'Треки не нашлись');
     markNowPlaying();
   }
-  async function openTracks(it) {
+  async function openTracks(it, force) {
     tk = { item: it, items: null };
     $('tracks').classList.add('show');
     layoutTracks();
@@ -919,16 +941,19 @@
     $('tkFilter').value = '';
     $('tkStat').textContent = '';
     $('tkList').textContent = '';
-    emptyMsg($('tkList'), 'Читаю список с сайта… (у длинных плейлистов это до 20 секунд)');
+    emptyMsg($('tkList'), 'Читаю список с сайта… (у длинных плейлистов это до минуты, если не всё сразу подгрузилось — читаю повторно)');
     let r;
-    try { r = await window.ym.tracks(it.url); } catch (e) { r = { error: String((e && e.message) || e) }; }
+    try { r = await window.ym.tracks(it.url, !!force); } catch (e) { r = { error: String((e && e.message) || e) }; }
     if (!tk.item || tk.item.url !== it.url) return; // тем временем открыли другой список
     if (!r || r.error) { $('tkInfo').textContent = TYPE_RU[it.type] || ''; $('tkList').textContent = ''; emptyMsg($('tkList'), 'Не получилось: ' + ((r && r.error) || 'нет ответа')); return; }
     tk.items = r.items || [];
     if (r.title && it.title === it.url) $('tkName').textContent = r.title;
-    $('tkInfo').textContent = (TYPE_RU[it.type] || '') + ' · ' + tk.items.length + ' треков';
+    const got = tk.items.length;
+    $('tkInfo').textContent = (TYPE_RU[it.type] || '') + ' · ' + (r.expected && got < r.expected ? got + ' из ' + r.expected : got) + ' треков';
+    $('tkStat').textContent = r.partial && got ? 'Загружено не всё (' + got + (r.expected ? ' из ' + r.expected : '') + ') — нажми ↻, чтобы прочитать заново' : '';
     renderTracks();
   }
+  $('tkReload').onclick = () => { if (tk.item) openTracks(tk.item, true); };
   $('tkClose').onclick = () => { tk = { item: null, items: null }; $('tracks').classList.remove('show'); };
   $('tkPlay').onclick = async () => {
     if (!tk.item) return;
